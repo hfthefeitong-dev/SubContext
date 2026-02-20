@@ -1,0 +1,94 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>字幕上下文翻译</title>
+    <style>
+      :root {
+        --primary-color: #6366f1; /* 漂亮的靛蓝色 */
+        --primary-hover: #4f46e5;
+        --bg-color: #f9fafb;
+        --text-color: #1f2937;
+        --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      }
+
+      body {
+        min-width: 280px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        margin: 0;
+        padding: 20px;
+        background-color: var(--bg-color);
+        color: var(--text-color);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .card {
+        background: white;
+        padding: 20px;
+        border-radius: 16px;
+        box-shadow: var(--shadow);
+        text-align: center;
+        width: 100%;
+        box-sizing: border-box;
+      }
+
+      h2 {
+        font-size: 18px;
+        margin: 0 0 12px 0;
+        color: #111;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+
+      p {
+        margin: 8px 0;
+        font-size: 14px;
+        color: #6b7280;
+        line-height: 1.5;
+      }
+
+      .icon-wrapper {
+        font-size: 32px;
+        margin-bottom: 10px;
+      }
+
+      button {
+        margin-top: 16px;
+        padding: 10px 16px;
+        width: 100%;
+        border: none;
+        border-radius: 12px;
+        cursor: pointer;
+        background: linear-gradient(135deg, var(--primary-color), var(--primary-hover));
+        color: #fff;
+        font-weight: 600;
+        font-size: 14px;
+        transition: transform 0.1s ease, box-shadow 0.2s ease;
+        box-shadow: 0 2px 5px rgba(99, 102, 241, 0.3);
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="icon-wrapper">✨</div>
+      <h2>字幕上下文翻译</h2>
+      <p>在 Spotify 或 YouTube 打开字幕，我会自动帮你翻译哦。</p>
+      <button id="openOptions">⚙️ 打开设置</button>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>

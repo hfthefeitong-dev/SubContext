@@ -1,0 +1,298 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>设置 - 字幕上下文翻译</title>
+    <style>
+      :root {
+        --primary: #6366f1;
+        --bg: #f3f4f6;
+        --surface: #ffffff;
+        --border: #e5e7eb;
+        --text-main: #111827;
+        --text-sub: #6b7280;
+        --radius: 12px;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background-color: var(--bg);
+        color: var(--text-main);
+        margin: 0;
+        padding: 40px 20px;
+        display: flex;
+        justify-content: center;
+      }
+
+      .container {
+        max-width: 600px;
+        width: 100%;
+      }
+
+      header {
+        text-align: center;
+        margin-bottom: 30px;
+      }
+
+      h1 {
+        font-size: 24px;
+        font-weight: 800;
+        margin: 0;
+        color: var(--text-main);
+      }
+
+      .subtitle {
+        color: var(--text-sub);
+        margin-top: 8px;
+        font-size: 14px;
+      }
+
+      .section-card {
+        background: var(--surface);
+        border-radius: var(--radius);
+        padding: 24px;
+        margin-bottom: 20px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        border: 1px solid rgba(0,0,0,0.05);
+      }
+
+      .section-title {
+        font-size: 16px;
+        font-weight: 700;
+        margin-bottom: 16px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid var(--border);
+        color: var(--text-main);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .form-group {
+        margin-bottom: 16px;
+      }
+
+      label {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 6px;
+        color: #374151;
+      }
+
+      input[type="text"],
+      input[type="password"],
+      input[type="number"],
+      select {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        font-size: 14px;
+        transition: all 0.2s;
+        box-sizing: border-box;
+        background: #fff;
+      }
+
+      input:focus, select:focus {
+        outline: none;
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+      }
+
+      input:disabled {
+        background-color: #f9fafb;
+        color: #9ca3af;
+        cursor: not-allowed;
+      }
+
+      .help {
+        font-size: 12px;
+        color: var(--text-sub);
+        margin-top: 5px;
+        line-height: 1.4;
+      }
+
+      /* Save Button Area */
+      .action-area {
+        position: sticky;
+        bottom: 20px;
+        background: rgba(255, 255, 255, 0.8);
+        backdrop-filter: blur(10px);
+        padding: 15px;
+        border-radius: 16px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border: 1px solid rgba(255,255,255,0.5);
+      }
+
+      button#saveBtn {
+        background: linear-gradient(135deg, var(--primary), #4f46e5);
+        color: white;
+        border: none;
+        padding: 10px 24px;
+        border-radius: 8px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.1s;
+        font-size: 14px;
+      }
+
+      button#saveBtn:hover {
+        transform: scale(1.02);
+      }
+
+      button#saveBtn:active {
+        transform: scale(0.98);
+      }
+
+      .status {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--primary);
+      }
+
+      .checkbox-label {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 600;
+        font-size: 13px;
+        color: #374151;
+        margin-bottom: 6px;
+      }
+    </style>
+  </head>
+  <body>
+
+    <div class="container">
+      <header>
+        <h1>字幕上下文翻译</h1>
+        <div class="subtitle">✨ 配置你的 AI 翻译助手</div>
+      </header>
+
+      <div class="section-card">
+        <div class="section-title">🔑 API 密钥设置</div>
+        
+        <div class="form-group">
+          <label for="apiKey">ChatGPT / OpenAI API Key</label>
+          <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" />
+          <div class="help">密钥仅存储在本地，不会上传服务器。</div>
+        </div>
+
+        <div class="form-group">
+          <label for="geminiApiKey">Gemini API Key (可选)</label>
+          <input type="password" id="geminiApiKey" placeholder="AIza..." autocomplete="off" />
+          <div class="help">如果留空，将回退使用上方的 OpenAI Key。</div>
+        </div>
+
+        <div class="form-group">
+          <label for="apiBaseUrl">API Base URL</label>
+          <input type="text" id="apiBaseUrl" placeholder="https://api.openai.com/v1/chat/completions" />
+          <div class="help">可填写自定义网关地址，留空则使用官方默认。</div>
+        </div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-title">🧠 模型参数</div>
+
+        <div class="form-group">
+          <label for="model">选择模型</label>
+          <select id="model">
+            <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+            <option value="gpt-4.1">gpt-4.1</option>
+            <option value="gpt-5.2">gpt-5.2</option>
+            <option value="gpt-5.1">gpt-5.1</option>
+            <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+          </select>
+          <div class="help" id="modelNote"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="temperature">创造性 / 温度 (0-1)</label>
+          <input type="number" id="temperature" min="0" max="1" step="0.1" placeholder="0.2" />
+        </div>
+
+        <div class="form-group">
+          <label for="geminiThinkingLevel">Gemini 思考深度 (仅 gemini-3-flash-preview)</label>
+          <select id="geminiThinkingLevel">
+            <option value="minimal">minimal - 最低延迟/成本</option>
+            <option value="low">low - 较低思考，快</option>
+            <option value="medium">medium - 均衡</option>
+            <option value="high">high - 深度 (默认)</option>
+          </select>
+          <div class="help">用于 Gemini 3 Flash 的 thinkingLevel，非 Gemini 模型时会自动禁用。</div>
+        </div>
+
+        <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+          <div>
+            <label for="batchSize">批处理大小</label>
+            <input type="number" id="batchSize" min="1" max="20" step="1" placeholder="8" disabled />
+          </div>
+          <div>
+            <label for="prefetchAhead">预取行数 (Context)</label>
+            <input type="number" id="prefetchAhead" min="1" max="20" step="1" placeholder="8" />
+          </div>
+          <div>
+            <label for="smoothLines">连贯缓冲行数 (M)</label>
+            <input type="number" id="smoothLines" min="1" max="20" step="1" placeholder="3" />
+            <div class="help">用于段与段交界时的译文缓冲，不能大于每段行数。</div>
+          </div>
+        </div>
+        <div class="help">数值越大上下文越连贯，但消耗 token 也越多。</div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-title">🎨 界面显示</div>
+        
+        <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+          <div>
+            <label for="panelHeightVh">最大高度 (vh)</label>
+            <input type="number" id="panelHeightVh" min="30" max="95" step="1" placeholder="70" />
+          </div>
+          <div>
+            <label for="panelWidthVw">宽度 (vw)</label>
+            <input type="number" id="panelWidthVw" min="20" max="90" step="1" placeholder="32" />
+          </div>
+        </div>
+        <div class="help">调整翻译悬浮窗在屏幕上的占用比例。</div>
+
+        <div class="form-group" style="margin-top: 12px;">
+          <div class="checkbox-label">
+            <input type="checkbox" id="hideTranslationTimestamp" />
+            <span>隐藏译文时间轴</span>
+          </div>
+          <div class="help">Spotify/YouTube 等站点译文行前的时间戳；原文不受影响。</div>
+        </div>
+
+        <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 12px;">
+          <div>
+            <label for="originalColorScheme">原文颜色</label>
+            <select id="originalColorScheme">
+              <option value="dark">深色</option>
+              <option value="green">绿色</option>
+            </select>
+          </div>
+          <div>
+            <label for="translationColorScheme">译文颜色</label>
+            <select id="translationColorScheme">
+              <option value="dark">深色</option>
+              <option value="green">绿色</option>
+            </select>
+          </div>
+        </div>
+        <div class="help">可分别为原文 / 译文选择深色或绿色，立即影响悬浮窗的文字颜色。</div>
+      </div>
+
+      <div class="action-area">
+        <div class="status" id="status"></div>
+        <button id="saveBtn">保存设置</button>
+      </div>
+
+    </div>
+    <script src="options.js"></script>
+  </body>
+</html>
