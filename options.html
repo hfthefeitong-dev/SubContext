@@ -183,9 +183,9 @@
         </div>
 
         <div class="form-group">
-          <label for="geminiApiKey">Gemini API Key (可选)</label>
+          <label for="geminiApiKey">Gemini API Key (Gemini 模型必填)</label>
           <input type="password" id="geminiApiKey" placeholder="AIza..." autocomplete="off" />
-          <div class="help">如果留空，将回退使用上方的 OpenAI Key。</div>
+          <div class="help">使用 Gemini 模型时必须填写，不会回退使用上方的 OpenAI Key。</div>
         </div>
 
         <div class="form-group">
@@ -247,18 +247,6 @@
 
       <div class="section-card">
         <div class="section-title">🎨 界面显示</div>
-        
-        <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-          <div>
-            <label for="panelHeightVh">最大高度 (vh)</label>
-            <input type="number" id="panelHeightVh" min="30" max="95" step="1" placeholder="70" />
-          </div>
-          <div>
-            <label for="panelWidthVw">宽度 (vw)</label>
-            <input type="number" id="panelWidthVw" min="20" max="90" step="1" placeholder="32" />
-          </div>
-        </div>
-        <div class="help">调整翻译悬浮窗在屏幕上的占用比例。</div>
 
         <div class="form-group" style="margin-top: 12px;">
           <div class="checkbox-label">

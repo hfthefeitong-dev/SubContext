@@ -127,9 +127,7 @@ async function getConfig() {
 
 async function translateMessage(text, metadata = {}) {
   const config = await getConfig();
-  if (!config.apiKey) {
-    throw new Error("Missing API key. Set it in the extension options.");
-  }
+  ensureApiKeyForModel(config);
 
   const trimmedText = (text || "").trim();
   if (!trimmedText) throw new Error("Empty text to translate.");
@@ -192,9 +190,7 @@ async function translateMessage(text, metadata = {}) {
 
 async function translateBatch(segments = [], context = {}) {
   const config = await getConfig();
-  if (!config.apiKey) {
-    throw new Error("Missing API key. Set it in the extension options.");
-  }
+  ensureApiKeyForModel(config);
   if (!Array.isArray(segments) || !segments.length) {
     throw new Error("No segments to translate.");
   }
@@ -298,9 +294,7 @@ async function smoothTranslations(
   nextOriginalLines = []
 ) {
   const config = await getConfig();
-  if (!config.apiKey) {
-    throw new Error("Missing API key. Set it in the extension options.");
-  }
+  ensureApiKeyForModel(config);
 
   const prev = (prevLines || []).map((l) => (l || "").trim()).filter(Boolean);
   const next = (nextLines || []).map((l) => (l || "").trim()).filter(Boolean);
@@ -605,6 +599,18 @@ function stripTimestamps(text) {
     .join("\n");
 }
 
+function ensureApiKeyForModel(config = {}) {
+  if (isGeminiModel(config.model)) {
+    if (!config.geminiApiKey) {
+      throw new Error("Missing Gemini API key. Set it in the extension options.");
+    }
+    return;
+  }
+  if (!config.apiKey) {
+    throw new Error("Missing API key. Set it in the extension options.");
+  }
+}
+
 function forceHighTemperature(config) {
   const model = (config?.model || DEFAULT_MODEL || "").toLowerCase();
   if (model === "gpt-5-mini" || model === "gpt-5-nano") return 1;
@@ -625,10 +631,14 @@ function normalizeGeminiThinkingLevel(level, fallback = "") {
 
 async function sendGeminiRequest({ config, messages }) {
   const model = config.model || "gemini-3-flash-preview";
+  const geminiApiKey = config.geminiApiKey?.trim();
+  if (!geminiApiKey) {
+    throw new Error("Missing Gemini API key. Set it in the extension options.");
+  }
   const base = normalizeGeminiEndpoint(
     config.apiBaseUrl,
     model,
-    config.geminiApiKey || config.apiKey
+    geminiApiKey
   );
   const contents = messages.map((m) => ({
     role: m.role === "assistant" ? "model" : "user",

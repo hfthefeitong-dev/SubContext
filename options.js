@@ -97,6 +97,12 @@ saveBtn.addEventListener("click", async () => {
   const translationColorScheme =
     translationColorSelect.value === "green" ? "green" : "dark";
 
+  if (isGeminiModel(model) && !geminiApiKey) {
+    statusEl.textContent = "使用 Gemini 模型时必须填写 Gemini API Key。";
+    statusEl.style.color = "#d33";
+    return;
+  }
+
   await chrome.storage.local.set({
     apiKey,
     apiBaseUrl,
