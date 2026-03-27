@@ -56,10 +56,9 @@ async function init() {
   updateModelNote();
   const prefetch = stored.prefetchAhead ?? defaults.prefetchAhead;
   prefetchAheadInput.value = prefetch;
-  batchSizeInput.value = prefetch;
-  batchSizeInput.disabled = true;
   const smooth = stored.smoothLines ?? defaults.smoothLines;
   smoothLinesInput.value = smooth;
+  syncSegmentControls();
   hideTranslationTimestampInput.checked =
     !!(stored.hideTranslationTimestamp ?? defaults.hideTranslationTimestamp);
   originalColorSelect.value = stored.originalColorScheme || defaults.originalColorScheme;
@@ -73,6 +72,14 @@ modelInput.addEventListener("change", () => {
   updateModelNote();
 });
 
+prefetchAheadInput.addEventListener("input", () => {
+  syncSegmentControls();
+});
+
+smoothLinesInput.addEventListener("input", () => {
+  syncSegmentControls();
+});
+
 saveBtn.addEventListener("click", async () => {
   const apiKey = apiKeyInput.value.trim();
   const geminiApiKey = geminiApiKeyInput.value.trim();
@@ -84,14 +91,17 @@ saveBtn.addEventListener("click", async () => {
     geminiThinkingLevelSelect.value,
     defaults.geminiThinkingLevel
   );
-  const prefetchAhead = clampInt(prefetchAheadInput.value, 1, 20, defaults.prefetchAhead);
+  const prefetchAhead = clampInt(prefetchAheadInput.value, 0, 20, defaults.prefetchAhead);
   const batchSize = prefetchAhead; // batch size follows segment size
-  const smoothLines = clampInt(
-    Math.min(prefetchAhead, smoothLinesInput.value),
-    1,
-    prefetchAhead,
-    defaults.smoothLines
-  );
+  const smoothLines =
+    prefetchAhead <= 0
+      ? 0
+      : clampInt(
+          Math.min(prefetchAhead, smoothLinesInput.value),
+          0,
+          prefetchAhead,
+          defaults.smoothLines
+        );
   const hideTranslationTimestamp = !!hideTranslationTimestampInput.checked;
   const originalColorScheme = originalColorSelect.value === "green" ? "green" : "dark";
   const translationColorScheme =
@@ -133,6 +143,27 @@ function clampFloat(value, min, max, fallback) {
   const n = parseFloat(value);
   if (Number.isNaN(n)) return fallback;
   return Math.min(max, Math.max(min, n));
+}
+
+function syncSegmentControls() {
+  const prefetchAhead = clampInt(
+    prefetchAheadInput.value,
+    0,
+    20,
+    defaults.prefetchAhead
+  );
+  batchSizeInput.value = prefetchAhead;
+  batchSizeInput.disabled = true;
+  smoothLinesInput.max = String(Math.max(0, prefetchAhead));
+  if (prefetchAhead <= 0) {
+    smoothLinesInput.value = "0";
+    smoothLinesInput.disabled = true;
+    return;
+  }
+  smoothLinesInput.disabled = false;
+  smoothLinesInput.value = String(
+    clampInt(smoothLinesInput.value, 0, prefetchAhead, defaults.smoothLines)
+  );
 }
 
 function syncTemperatureLock() {

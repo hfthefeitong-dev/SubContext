@@ -4,6 +4,9 @@ const DEFAULT_CONTEXT_LINES = 8; // user-defined "segment" length (lines)
 const DEFAULT_TEMPERATURE = 0.2;
 const DEFAULT_SMOOTH_LINES = 3;
 const DEFAULT_GEMINI_THINKING_LEVEL = "high";
+const DEFAULT_REQUEST_TIMEOUT_MS = 45000;
+const DEFAULT_REQUEST_MAX_RETRIES = 1;
+const DEFAULT_REQUEST_RETRY_DELAY_MS = 1200;
 
 const recentSegments = [];
 const recentTranslations = [];
@@ -63,6 +66,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       );
     return true;
   }
+
+  if (message?.type === "resetContext") {
+    clearRecentContext();
+    sendResponse({ ok: true });
+    return false;
+  }
 });
 
 chrome.action.onClicked.addListener((tab) => {
@@ -84,6 +93,11 @@ function logTranslateBatch(segments) {
   } catch (err) {
     console.warn("[spt] failed to log batch", err);
   }
+}
+
+function clearRecentContext() {
+  recentSegments.length = 0;
+  recentTranslations.length = 0;
 }
 
 async function getConfig() {
@@ -143,6 +157,8 @@ async function translateMessage(text, metadata = {}) {
         ...contextMessages,
         { role: "user", content: cleanText },
       ],
+      requestLabel: "Translation request",
+      missingMessage: "Translation missing in Gemini API response.",
     });
   } else {
     const payload = {
@@ -156,31 +172,12 @@ async function translateMessage(text, metadata = {}) {
       ],
       temperature: forceHighTemperature(config),
     };
-
-    const response = await fetch(config.apiBaseUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify(payload),
+    translation = await sendOpenAIRequest({
+      config,
+      payload,
+      requestLabel: "Translation request",
+      missingMessage: "Translation missing in API response.",
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(
-        `Translation request failed (${response.status}): ${errorText.slice(0, 200)}`
-      );
-    }
-
-    const data = await response.json();
-    translation =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      data?.choices?.[0]?.text?.trim();
-
-    if (!translation) {
-      throw new Error("Translation missing in API response.");
-    }
   }
 
   pushRecent(cleanText, config.contextLines);
@@ -232,6 +229,8 @@ async function translateBatch(segments = [], context = {}) {
           ].join("\n"),
         },
       ],
+      requestLabel: "Translation request",
+      missingMessage: "Translation missing in Gemini API response.",
     });
   } else {
     const payload = {
@@ -253,27 +252,12 @@ async function translateBatch(segments = [], context = {}) {
       ],
       temperature: forceHighTemperature(config),
     };
-
-    const response = await fetch(config.apiBaseUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify(payload),
+    translation = await sendOpenAIRequest({
+      config,
+      payload,
+      requestLabel: "Translation request",
+      missingMessage: "Translation missing in API response.",
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(
-        `Translation request failed (${response.status}): ${errorText.slice(0, 200)}`
-      );
-    }
-
-    const data = await response.json();
-    translation =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      data?.choices?.[0]?.text?.trim();
   }
 
   if (!translation) {
@@ -383,6 +367,8 @@ async function smoothTranslations(
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
+      requestLabel: "Smoothing request",
+      missingMessage: "Translation missing in Gemini API response.",
     });
   } else {
     const payload = {
@@ -393,27 +379,12 @@ async function smoothTranslations(
       ],
       temperature: Math.min(0.4, forceHighTemperature(config)),
     };
-
-    const response = await fetch(config.apiBaseUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify(payload),
+    translation = await sendOpenAIRequest({
+      config,
+      payload,
+      requestLabel: "Smoothing request",
+      missingMessage: "Translation missing in API response.",
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(
-        `Smoothing request failed (${response.status}): ${errorText.slice(0, 200)}`
-      );
-    }
-
-    const data = await response.json();
-    translation =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      data?.choices?.[0]?.text?.trim();
   }
 
   const parsed = parseDelimitedTranslation(translation, total);
@@ -629,7 +600,12 @@ function normalizeGeminiThinkingLevel(level, fallback = "") {
   return allowed.includes(fallbackNormalized) ? fallbackNormalized : "";
 }
 
-async function sendGeminiRequest({ config, messages }) {
+async function sendGeminiRequest({
+  config,
+  messages,
+  requestLabel = "Translation request",
+  missingMessage = "Translation missing in Gemini API response.",
+}) {
   const model = config.model || "gemini-3-flash-preview";
   const geminiApiKey = config.geminiApiKey?.trim();
   if (!geminiApiKey) {
@@ -658,29 +634,40 @@ async function sendGeminiRequest({ config, messages }) {
       thinkingConfig: { thinkingLevel },
     };
   }
+  return runWithRetries(
+    async () => {
+      const response = await fetchWithTimeout(
+        base,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        },
+        DEFAULT_REQUEST_TIMEOUT_MS
+      );
 
-  const response = await fetch(base, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw createHttpError(`${requestLabel} failed`, response.status, errorText);
+      }
+
+      const data = await response.json();
+      const text =
+        data?.candidates?.[0]?.content?.parts
+          ?.map((p) => p?.text || "")
+          .join("\n")
+          .trim() || "";
+      if (!text) {
+        const error = new Error(missingMessage);
+        error.retryable = false;
+        throw error;
+      }
+      return text;
     },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `Translation request failed (${response.status}): ${errorText.slice(0, 200)}`
-    );
-  }
-
-  const data = await response.json();
-  const text =
-    data?.candidates?.[0]?.content?.parts?.map((p) => p?.text).join("\n").trim();
-  if (!text) {
-    throw new Error("Translation missing in Gemini API response.");
-  }
-  return text;
+    { label: requestLabel }
+  );
 }
 
 function normalizeGeminiEndpoint(apiBaseUrl, model, apiKey) {
@@ -693,4 +680,109 @@ function normalizeGeminiEndpoint(apiBaseUrl, model, apiKey) {
   const safeModel = encodeURIComponent(model);
   const keyParam = apiKey ? `?key=${encodeURIComponent(apiKey)}` : "";
   return `https://generativelanguage.googleapis.com/v1beta/models/${safeModel}:generateContent${keyParam}`;
+}
+
+async function sendOpenAIRequest({
+  config,
+  payload,
+  requestLabel = "Translation request",
+  missingMessage = "Translation missing in API response.",
+}) {
+  return runWithRetries(
+    async () => {
+      const response = await fetchWithTimeout(
+        config.apiBaseUrl,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.apiKey}`,
+          },
+          body: JSON.stringify(payload),
+        },
+        DEFAULT_REQUEST_TIMEOUT_MS
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw createHttpError(`${requestLabel} failed`, response.status, errorText);
+      }
+
+      const data = await response.json();
+      const text =
+        data?.choices?.[0]?.message?.content?.trim() ||
+        data?.choices?.[0]?.text?.trim();
+      if (!text) {
+        const error = new Error(missingMessage);
+        error.retryable = false;
+        throw error;
+      }
+      return text;
+    },
+    { label: requestLabel }
+  );
+}
+
+function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() =>
+    clearTimeout(timeoutId)
+  );
+}
+
+function createHttpError(prefix, status, errorText = "") {
+  const error = new Error(
+    `${prefix} (${status}): ${String(errorText || "").slice(0, 200)}`
+  );
+  error.status = status;
+  error.retryable = [408, 409, 425, 429, 500, 502, 503, 504].includes(status);
+  return error;
+}
+
+function normalizeRequestError(error, label = "Request") {
+  if (!error) {
+    const fallback = new Error(`${label} failed.`);
+    fallback.retryable = true;
+    return fallback;
+  }
+  if (typeof error.retryable === "boolean") {
+    return error;
+  }
+  if (error.name === "AbortError") {
+    const timeoutError = new Error(
+      `${label} timed out after ${Math.round(DEFAULT_REQUEST_TIMEOUT_MS / 1000)}s.`
+    );
+    timeoutError.retryable = true;
+    return timeoutError;
+  }
+
+  const normalized =
+    error instanceof Error ? error : new Error(error?.message || String(error));
+  normalized.retryable =
+    error?.name === "TypeError" ||
+    /Failed to fetch|fetch failed|network|NetworkError|ERR_/i.test(
+      normalized.message || ""
+    );
+  return normalized;
+}
+
+async function runWithRetries(task, { label = "Request" } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= DEFAULT_REQUEST_MAX_RETRIES; attempt += 1) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = normalizeRequestError(error, label);
+      if (!lastError.retryable || attempt >= DEFAULT_REQUEST_MAX_RETRIES) {
+        throw lastError;
+      }
+      await delay(DEFAULT_REQUEST_RETRY_DELAY_MS * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

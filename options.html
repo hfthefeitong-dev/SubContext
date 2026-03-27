@@ -234,15 +234,15 @@
           </div>
           <div>
             <label for="prefetchAhead">预取行数 (Context)</label>
-            <input type="number" id="prefetchAhead" min="1" max="20" step="1" placeholder="8" />
+            <input type="number" id="prefetchAhead" min="0" max="20" step="1" placeholder="8" />
           </div>
           <div>
             <label for="smoothLines">连贯缓冲行数 (M)</label>
-            <input type="number" id="smoothLines" min="1" max="20" step="1" placeholder="3" />
+            <input type="number" id="smoothLines" min="0" max="20" step="1" placeholder="3" />
             <div class="help">用于段与段交界时的译文缓冲，不能大于每段行数。</div>
           </div>
         </div>
-        <div class="help">数值越大上下文越连贯，但消耗 token 也越多。</div>
+        <div class="help">数值越大上下文越连贯，但消耗 token 也越多；预取行数设为 0 时会关闭预取与连贯缓冲。</div>
       </div>
 
       <div class="section-card">

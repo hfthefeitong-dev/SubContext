@@ -25,6 +25,7 @@
   const submittedIds = new Set(); // segments already sent for translation
   const renderedIds = new Set(); // segments already shown in UI
   const translationCache = new Map(); // id -> translated text
+  const retryAfterById = new Map(); // id -> next retry timestamp
   const translationQueue = [];
   const entryMap = new Map();
   const chunkBuffers = new Map(); // chunkId -> { expected, originals: [], translations: [], finalized: false }
@@ -33,6 +34,8 @@
   let lastChunkOriginal = []; // 上一段原文行
   let lastChunkTranslations = []; // 上一段译文行
   let lastChunkLastTranslation = ""; // 上一段最后一句译文
+  let activeSessionKey = "";
+  let sessionVersion = 0;
   let activeTranslations = 0;
   let lastPrefetchedChunkId = -1;
   const MAX_PARALLEL = 1; // 串行翻译，保证上下文按顺序传递
@@ -40,6 +43,8 @@
   const DEFAULT_PREFETCH_AHEAD = 8;
   const DEFAULT_SMOOTH_LINES = 3;
   const DEFAULT_QUEUE_FLUSH_MS = 300;
+  const DEFAULT_RETRY_DELAY_MS = 3000;
+  const DEFAULT_CONFIG_RETRY_DELAY_MS = 15000;
   const DEFAULT_PANEL_HEIGHT_VH = 70;
   const DEFAULT_PANEL_WIDTH_VW = 32;
   const DEFAULT_FONT_ORIGINAL = 12;
@@ -130,6 +135,91 @@
         resolve(fallback ?? { ok: false, error: err.message });
       }
     });
+  }
+
+  function canSubmitSegment(id) {
+    const retryAt = retryAfterById.get(id);
+    if (!retryAt) return true;
+    if (retryAt <= Date.now()) {
+      retryAfterById.delete(id);
+      return true;
+    }
+    return false;
+  }
+
+  function getRetryDelayMs(errorLike) {
+    const message = String(errorLike?.message || errorLike || "");
+    if (/Missing API key|Missing Gemini API key|401|403|404/i.test(message)) {
+      return DEFAULT_CONFIG_RETRY_DELAY_MS;
+    }
+    return DEFAULT_RETRY_DELAY_MS;
+  }
+
+  function resetTranslationState({ clearUi = true } = {}) {
+    submittedIds.clear();
+    renderedIds.clear();
+    translationCache.clear();
+    retryAfterById.clear();
+    translationQueue.length = 0;
+    chunkBuffers.clear();
+    lastSegments = [];
+    lastChunkOriginal = [];
+    lastChunkTranslations = [];
+    lastChunkLastTranslation = "";
+    lastPrefetchedChunkId = -1;
+    sessionVersion += 1;
+    safeSendMessage({ type: "resetContext" }, { ok: false });
+    if (clearUi) {
+      entryMap.clear();
+      if (listEl) listEl.innerHTML = "";
+      setStatus("");
+    }
+  }
+
+  function ensureSession(nextKey, options = {}) {
+    const key = String(nextKey || "").trim();
+    if (!key || key === activeSessionKey) return false;
+    activeSessionKey = key;
+    resetTranslationState(options);
+    return true;
+  }
+
+  function buildMediaBaseKey(video = getPrimaryVideo()) {
+    return [
+      location.hostname || "",
+      location.pathname || "",
+      video?.currentSrc || video?.src || "",
+    ].join("||");
+  }
+
+  function buildTrackSessionKey(track, video, cues = track?.cues || []) {
+    const firstCue = cues?.[0];
+    return [
+      "track",
+      buildMediaBaseKey(video),
+      track?.kind || "",
+      track?.label || "",
+      track?.language || "",
+      firstCue?.startTime ?? "",
+      cleanText(firstCue?.text || "").slice(0, 80),
+    ].join("||");
+  }
+
+  function buildTranscriptSessionKey(video, segments = []) {
+    const first = segments[0];
+    return [
+      "transcript",
+      buildMediaBaseKey(video),
+      first?.id || "",
+      first?.seconds ?? "",
+    ].join("||");
+  }
+
+  function setStableChunkContext(originalLines = [], translatedLines = []) {
+    lastChunkOriginal = (originalLines || []).filter(Boolean).slice(-3);
+    lastChunkTranslations = (translatedLines || []).filter(Boolean).slice(-3);
+    lastChunkLastTranslation =
+      lastChunkTranslations[lastChunkTranslations.length - 1] || "";
   }
 
   function isAnyVideoPlaying() {
@@ -282,6 +372,7 @@
     // YouTube：按播放时间拿两段（每段若干行）翻译，当前段渲染，下一段预取，播放到对应时间戳再渲染
     if (isYouTubeSite()) {
       const segments = collectTranscriptSegments();
+      ensureSession(buildTranscriptSessionKey(video, segments));
       lastSegments = segments;
       if (!segments.length) {
         setStatus("请打开 YouTube 的“转写”面板以获取字幕。");
@@ -434,7 +525,7 @@
         if (!track || hookedTracks.has(track)) return;
         hookedTracks.add(track);
         track.mode = "hidden"; // allow JS access
-        track.addEventListener("cuechange", () => handleCueChange(track));
+        track.addEventListener("cuechange", () => handleCueChange(track, video));
       };
 
       const tracks = video.textTracks || [];
@@ -452,7 +543,7 @@
           const track = e.track;
           registerTrack(track);
           if (track?.cues?.length) {
-            handleCueChange(track); // immediately process if cues already loaded
+            handleCueChange(track, video); // immediately process if cues already loaded
           }
         });
       }
@@ -531,6 +622,14 @@
 
   function handleStorageChange(changes, area) {
     if (area !== "local") return;
+    if (
+      changes.apiKey ||
+      changes.geminiApiKey ||
+      changes.apiBaseUrl ||
+      changes.model
+    ) {
+      retryAfterById.clear();
+    }
     if (!overlay) return;
     if (changes.prefetchAhead) {
       PREFETCH_AHEAD = clampInt(
@@ -620,10 +719,13 @@
     }
   }
 
-  function handleCueChange(track) {
+  function handleCueChange(track, videoRef = getPrimaryVideo()) {
     if (!overlayEnabled) return;
     const activeCues = track?.activeCues || [];
     const allCues = track?.cues || [];
+    if (allCues.length) {
+      ensureSession(buildTrackSessionKey(track, videoRef, allCues));
+    }
     const activeIds = new Set();
 
     // translate active cues immediately
@@ -638,7 +740,7 @@
       const idx = findCueIndex(allCues, firstActive);
       if (idx >= 0) {
         if (idx === 0) {
-          lastPrefetchedChunkId = -1; // new track, reset
+          lastPrefetchedChunkId = -1;
         }
         const chunkSize = Math.max(1, PREFETCH_AHEAD || 1);
         const currentChunkId = Math.floor(idx / chunkSize);
@@ -782,9 +884,15 @@
     segment,
     { prefetch = false, render = true, groupId, deferSchedule = false } = {}
   ) {
-    if (submittedIds.has(segment.id)) return;
+    if (submittedIds.has(segment.id) || !canSubmitSegment(segment.id)) return;
     submittedIds.add(segment.id);
-    translationQueue.push({ ...segment, prefetch, render, groupId });
+    translationQueue.push({
+      ...segment,
+      prefetch,
+      render,
+      groupId,
+      sessionVersion,
+    });
     if (!deferSchedule) scheduleQueueProcessing();
   }
 
@@ -797,7 +905,7 @@
       ensureChunkBuffer(chunkId, segments.length + startOrder);
     }
     segments.forEach((segment, idx) => {
-      if (submittedIds.has(segment.id)) return;
+      if (submittedIds.has(segment.id) || !canSubmitSegment(segment.id)) return;
       submittedIds.add(segment.id);
       if (renderNow) {
         renderedIds.add(segment.id);
@@ -812,6 +920,7 @@
         prefetch: !renderNow,
         render: renderNow,
         groupId: gid,
+        sessionVersion,
       };
       if (chunkId !== null) {
         payload.chunkId = chunkId;
@@ -905,10 +1014,15 @@
       batch = translationQueue.splice(0, effectiveBatch);
     }
     if (!batch.length) return;
+    const batchSessionVersion = batch[0]?.sessionVersion ?? sessionVersion;
     activeTranslations += 1;
     translateBatch(batch)
       .catch((err) => {
+        if (batchSessionVersion !== sessionVersion) return;
+        const retryAt = Date.now() + getRetryDelayMs(err);
         batch.forEach((seg) => {
+          submittedIds.delete(seg.id);
+          retryAfterById.set(seg.id, retryAt);
           if (seg.render) {
             updateEntry(seg.id, `翻译失败: ${err.message || err}`, true);
           }
@@ -921,10 +1035,12 @@
   }
 
   async function translateBatch(batch) {
+    const batchSessionVersion = batch[0]?.sessionVersion ?? sessionVersion;
     const response = await sendTranslationRequest(batch);
     if (!response.ok) {
       throw new Error(response.error || "Translation failed");
     }
+    if (batchSessionVersion !== sessionVersion) return;
     const lines = normalizeTranslationLines(response.translation, batch.length);
     const cleanedLines = [];
     const touchedChunks = new Set();
@@ -932,6 +1048,7 @@
       const rawLine = lines[idx] || response.translation || "";
       const cleaned = cleanTranslatedLine(rawLine, segment.timestamp);
       cleanedLines.push(cleaned);
+      retryAfterById.delete(segment.id);
       if (
         typeof segment.chunkId === "number" &&
         Number.isInteger(segment.chunkOrder)
@@ -959,11 +1076,6 @@
         }
       }
     });
-    // 更新上一段上下文：原文行、译文行（最多三行）、最后一句译文（去掉时间戳）
-    lastChunkOriginal = batch.map((s) => s.text);
-    lastChunkTranslations = cleanedLines.slice(-3);
-    lastChunkLastTranslation =
-      lastChunkTranslations[lastChunkTranslations.length - 1] || "";
 
     if (touchedChunks.size) {
       for (const chunkId of touchedChunks) {
@@ -971,6 +1083,11 @@
         publishChunkIfReady(chunkId, { keepBuffer: true });
       }
       finalizeTrailingChunksIfIdle();
+    } else {
+      setStableChunkContext(
+        batch.map((s) => s.text),
+        cleanedLines
+      );
     }
 
     // If translations arrived while video is paused, render immediately using current time
@@ -1070,10 +1187,7 @@
         updateEntry(seg.id, content, false, seg.text);
       }
     }
-    lastChunkTranslations = buf.translations.slice(-3);
-    lastChunkLastTranslation =
-      lastChunkTranslations[lastChunkTranslations.length - 1] || "";
-    lastChunkOriginal = buf.originals.slice(-3);
+    setStableChunkContext(buf.originals, buf.translations);
     if (!keepBuffer && buf.finalized) {
       chunkBuffers.delete(chunkId);
     }
@@ -1212,16 +1326,24 @@
   }
 
   function ensureChunkBuffer(chunkId, expected) {
-    if (chunkBuffers.has(chunkId)) return;
     const size = Math.max(1, expected || PREFETCH_AHEAD);
-    chunkBuffers.set(chunkId, {
-      expected: size,
-      originals: Array(size).fill(""),
-      translations: Array(size).fill(""),
-      segments: Array(size).fill(null),
-      finalized: false,
-      published: false,
-    });
+    const existing = chunkBuffers.get(chunkId);
+    if (!existing) {
+      chunkBuffers.set(chunkId, {
+        expected: size,
+        originals: Array(size).fill(""),
+        translations: Array(size).fill(""),
+        segments: Array(size).fill(null),
+        finalized: false,
+        published: false,
+      });
+      return;
+    }
+    if (size <= existing.expected) return;
+    existing.expected = size;
+    while (existing.originals.length < size) existing.originals.push("");
+    while (existing.translations.length < size) existing.translations.push("");
+    while (existing.segments.length < size) existing.segments.push(null);
   }
 
   function isChunkReady(buf) {
