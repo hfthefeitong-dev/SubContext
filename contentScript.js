@@ -30,6 +30,14 @@
   const entryMap = new Map();
   const chunkBuffers = new Map(); // chunkId -> { expected, originals: [], translations: [], finalized: false }
   const GROUP_DOM = "dom-chunk";
+  const youtubeTranscriptState = {
+    mediaKey: "",
+    tracksKey: "",
+    loadingPromise: null,
+    segments: [],
+    anchorSeconds: null,
+    panel: null,
+  };
   let lastSegments = []; // cache of latest transcript segments (ordered)
   let lastChunkOriginal = []; // 上一段原文行
   let lastChunkTranslations = []; // 上一段译文行
@@ -45,6 +53,9 @@
   const DEFAULT_QUEUE_FLUSH_MS = 300;
   const DEFAULT_RETRY_DELAY_MS = 3000;
   const DEFAULT_CONFIG_RETRY_DELAY_MS = 15000;
+  const PENDING_TRANSLATION_TEXT = "翻译中...";
+  const MAX_TRANSCRIPT_TIME_DRIFT_SEC = 8;
+  const YOUTUBE_VISIBLE_LINES = 2;
   const DEFAULT_PANEL_HEIGHT_VH = 70;
   const DEFAULT_PANEL_WIDTH_VW = 32;
   const DEFAULT_FONT_ORIGINAL = 12;
@@ -334,6 +345,34 @@
     return videos.length ? videos[0] : null;
   }
 
+  function extractLeadingTimestamp(rawText) {
+    const normalized = cleanText(rawText);
+    if (!normalized) return { timestamp: "", text: "" };
+    const match = normalized.match(
+      /^((?:\d{1,2}:)?\d{1,2}:\d{2})(?:\s+|\s*[-|]\s*)(.+)$/
+    );
+    if (!match) {
+      return { timestamp: "", text: normalized };
+    }
+    return {
+      timestamp: cleanText(match[1] || ""),
+      text: cleanText(match[2] || ""),
+    };
+  }
+
+  function getTranscriptTimestampNode(node) {
+    if (!node?.querySelector) return null;
+    return (
+      node.querySelector('[id="segment-timestamp"]') ||
+      node.querySelector("#start-offset") ||
+      node.querySelector("time") ||
+      node.querySelector(".segment-timestamp") ||
+      node.querySelector('[class*="segment-timestamp"]') ||
+      node.querySelector('[class*="timestamp"]') ||
+      node.querySelector('[data-testid="timestamp"]')
+    );
+  }
+
   function getCurrentTranscriptTime() {
     // 尝试从当前高亮的转写行获取时间戳
     const active =
@@ -345,10 +384,9 @@
         'ytd-transcript-segment-renderer[focused] [id="segment-timestamp"]'
       );
     if (!active) return null;
-    const tsNode =
-      active.querySelector('[id="segment-timestamp"]') ||
-      active.querySelector("time");
-    const ts = cleanText(tsNode?.textContent || "");
+    const tsNode = getTranscriptTimestampNode(active);
+    const fallback = extractLeadingTimestamp(active.innerText || "");
+    const ts = cleanText(tsNode?.textContent || fallback.timestamp || "");
     return parseTimestampToSeconds(ts);
   }
 
@@ -359,23 +397,45 @@
       scanTimer = null;
       if (!overlayEnabled) return;
       if (isAnyVideoPlaying()) {
-        scanForSegments();
+        void scanForSegments();
       }
       hookVideoTracks();
     }, 200); // 更高频率扫描，降低延迟与批量渲染
   }
 
-  function scanForSegments() {
+  async function scanForSegments() {
     const video = getPrimaryVideo();
-    const currentTime = video?.currentTime;
+    const videoTime = video?.currentTime;
 
     // YouTube：按播放时间拿两段（每段若干行）翻译，当前段渲染，下一段预取，播放到对应时间戳再渲染
     if (isYouTubeSite()) {
-      const segments = collectTranscriptSegments();
+      const segments = await collectYouTubeTranscriptSegments(video);
+      const transcriptTime = getCurrentTranscriptTime();
+      const hasTranscriptTime = isFinite(transcriptTime ?? NaN);
+      const hasVideoTime = isFinite(videoTime ?? NaN);
+      const panelAnchorTime =
+        youtubeTranscriptState.tracksKey === "panel-text" &&
+        isFinite(youtubeTranscriptState.anchorSeconds ?? NaN)
+          ? youtubeTranscriptState.anchorSeconds
+          : null;
+      const currentTime =
+        isFinite(panelAnchorTime ?? NaN)
+          ? panelAnchorTime
+          :
+        hasTranscriptTime &&
+        (!hasVideoTime ||
+          Math.abs((transcriptTime ?? 0) - (videoTime ?? 0)) <=
+            MAX_TRANSCRIPT_TIME_DRIFT_SEC)
+          ? transcriptTime
+          : videoTime;
       ensureSession(buildTranscriptSessionKey(video, segments));
       lastSegments = segments;
       if (!segments.length) {
-        setStatus("请打开 YouTube 的“转写”面板以获取字幕。");
+        setStatus(
+          isYouTubeLiveContent()
+            ? "未能从这个 YouTube 直播/回放页面解析到转写内容。请确认右侧“转写文稿”已展开；若仍无结果，可能是该视频当前不提供可抓取的字幕数据。"
+            : "请打开 YouTube 的“转写”面板以获取字幕。"
+        );
         return;
       }
       setStatus("");
@@ -387,10 +447,26 @@
       );
       if (currentIdx < 0) currentIdx = segments.length - 1;
       const currentChunkId = Math.floor(currentIdx / chunkSize);
+      const currentChunkStart = currentChunkId * chunkSize;
+      const currentChunkEnd = currentChunkStart + chunkSize;
+      const currentVisibleCount = Math.max(1, YOUTUBE_VISIBLE_LINES);
+      const currentOffset = Math.max(0, currentIdx - currentChunkStart);
 
       const currentChunk = segments.slice(
-        currentChunkId * chunkSize,
-        currentChunkId * chunkSize + chunkSize
+        currentChunkStart,
+        currentChunkEnd
+      );
+      const currentVisibleChunk = segments.slice(
+        currentIdx,
+        Math.min(currentChunkEnd, currentIdx + currentVisibleCount)
+      );
+      const currentLeadingChunk = segments.slice(
+        currentChunkStart,
+        currentIdx
+      );
+      const currentTrailingChunk = segments.slice(
+        Math.min(currentChunkEnd, currentIdx + currentVisibleCount),
+        currentChunkEnd
       );
       const nextChunk = segments.slice(
         (currentChunkId + 1) * chunkSize,
@@ -401,11 +477,19 @@
         (currentChunkId + 3) * chunkSize
       );
 
-      // 当前段渲染原文；译文会在时间戳到达且缓存有结果时填入
-      enqueueChunk(currentChunk, `${GROUP_DOM}-${currentChunkId}`, false, {
-        renderPlaceholder: false,
+      // 当前仅立即显示 1-2 行；整段仍会预取翻译以保留上下文和顺滑度
+      enqueueChunk(currentVisibleChunk, `${GROUP_DOM}-${currentChunkId}-visible`, true, {
+        renderPlaceholder: true,
+        chunkId: currentChunkId,
+        startOrder: currentOffset,
+      });
+      enqueueChunk(currentLeadingChunk, `${GROUP_DOM}-${currentChunkId}-leading`, false, {
         chunkId: currentChunkId,
         startOrder: 0,
+      });
+      enqueueChunk(currentTrailingChunk, `${GROUP_DOM}-${currentChunkId}-trailing`, false, {
+        chunkId: currentChunkId,
+        startOrder: currentOffset + currentVisibleChunk.length,
       });
       if (PREFETCH_AHEAD > 0) {
         enqueueChunk(nextChunk, `${GROUP_DOM}-${currentChunkId + 1}`, false, {
@@ -437,15 +521,15 @@
     nodes.forEach((node) => {
       const segment = extractSegment(node);
       if (!segment || !segment.text) return;
-      if (typeof currentTime === "number" && segment.seconds != null) {
-        if (segment.seconds < currentTime - pastWindow) return;
-        if (segment.seconds > currentTime + futureWindow) return;
+      if (typeof videoTime === "number" && segment.seconds != null) {
+        if (segment.seconds < videoTime - pastWindow) return;
+        if (segment.seconds > videoTime + futureWindow) return;
       }
       if (renderedIds.has(segment.id) || submittedIds.has(segment.id)) return;
       renderedIds.add(segment.id);
       ensureEntry(
         segment,
-        translationCache.get(segment.id) || ""
+        translationCache.get(segment.id) || PENDING_TRANSLATION_TEXT
       );
       enqueueTranslation(segment, { prefetch: false, render: true });
     });
@@ -461,12 +545,9 @@
     }
     const rawText = cleanText(node.innerText || "");
     if (!rawText) return null;
-    const timeNode =
-      node.querySelector("time") ||
-      node.querySelector('[data-testid="timestamp"]') ||
-      node.querySelector('[class*="timestamp"]') ||
-      node.querySelector('[id="segment-timestamp"]');
-    const timestamp = cleanText(timeNode?.textContent || "");
+    const timeNode = getTranscriptTimestampNode(node);
+    const fallback = extractLeadingTimestamp(rawText);
+    const timestamp = cleanText(timeNode?.textContent || fallback.timestamp || "");
     // For YouTube transcript items, drop the leading timestamp from the text content
     const seconds = parseTimestampToSeconds(timestamp);
     const canonicalTimestamp = seconds != null ? formatTimestamp(seconds) : timestamp;
@@ -476,6 +557,9 @@
       }
       if (canonicalTimestamp && rawText.startsWith(canonicalTimestamp)) {
         return cleanText(rawText.slice(canonicalTimestamp.length));
+      }
+      if (fallback.timestamp && fallback.text) {
+        return fallback.text;
       }
       return rawText;
     })();
@@ -901,6 +985,9 @@
     const gid = groupId || `grp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const chunkId = Number.isFinite(options.chunkId) ? options.chunkId : null;
     const startOrder = Number.isInteger(options.startOrder) ? options.startOrder : 0;
+    const placeholderText = options.renderPlaceholder
+      ? options.placeholderText || PENDING_TRANSLATION_TEXT
+      : "";
     if (chunkId !== null) {
       ensureChunkBuffer(chunkId, segments.length + startOrder);
     }
@@ -910,7 +997,7 @@
       if (renderNow) {
         renderedIds.add(segment.id);
         const cached = translationCache.get(segment.id);
-        ensureEntry(segment, cached || segment.text || "");
+        ensureEntry(segment, cached || placeholderText);
         if (cached) {
           updateEntry(segment.id, cached, false, segment.text);
         }
@@ -944,6 +1031,249 @@
     });
     segments.sort((a, b) => (a.seconds ?? 0) - (b.seconds ?? 0));
     return segments;
+  }
+
+  async function collectYouTubeTranscriptSegments(video) {
+    const panelResult = collectYouTubeTranscriptFromPanelText();
+    youtubeTranscriptState.mediaKey = buildMediaBaseKey(video);
+    youtubeTranscriptState.loadingPromise = null;
+    youtubeTranscriptState.panel = panelResult.panel || null;
+    if (panelResult.segments.length) {
+      youtubeTranscriptState.tracksKey = "panel-text";
+      youtubeTranscriptState.segments = panelResult.segments;
+      youtubeTranscriptState.anchorSeconds =
+        panelResult.anchorSeconds ?? panelResult.segments[0]?.seconds ?? null;
+      return panelResult.segments;
+    }
+    youtubeTranscriptState.tracksKey = "panel-text";
+    youtubeTranscriptState.segments = [];
+    youtubeTranscriptState.anchorSeconds = null;
+    youtubeTranscriptState.panel = null;
+    return [];
+  }
+
+  function collectYouTubeTranscriptFromPanelText() {
+    const panels = Array.from(
+      document.querySelectorAll("ytd-engagement-panel-section-list-renderer")
+    );
+    const candidates = panels
+      .map((panel) => {
+        const rawText = panel.innerText || "";
+        const text = cleanText(rawText);
+        const segments = parseTranscriptSegmentsFromText(rawText);
+        return {
+          panel,
+          text,
+          segments,
+          score: scoreYouTubePanel(panel, text, segments),
+        };
+      })
+      .filter(({ text, segments, score }) => {
+        return (
+          /(?:\d{1,2}:)?\d{1,2}:\d{2}/.test(text) &&
+          segments.length >= 3 &&
+          score > -50
+        );
+      })
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        if (b.segments.length !== a.segments.length) {
+          return b.segments.length - a.segments.length;
+        }
+        return (b.text.length || 0) - (a.text.length || 0);
+      });
+
+    for (const { panel, segments } of candidates) {
+      if (segments.length >= 3) {
+        return {
+          panel,
+          segments,
+          anchorSeconds: getVisibleTranscriptAnchorSeconds(panel),
+        };
+      }
+    }
+    return { panel: null, segments: [], anchorSeconds: null };
+  }
+
+  function getVisibleTranscriptAnchorSeconds(panel) {
+    if (!panel?.querySelectorAll) return null;
+    const nodes = Array.from(panel.querySelectorAll("*"))
+      .filter((node) => {
+        const text = cleanText(node.textContent || "");
+        return /^(\d{1,2}:)?\d{1,2}:\d{2}$/.test(text) && isNodeVisible(node);
+      })
+      .sort((a, b) => {
+        const ar = a.getBoundingClientRect();
+        const br = b.getBoundingClientRect();
+        return ar.top - br.top;
+      });
+    for (const node of nodes) {
+      const seconds = parseTimestampToSeconds(cleanText(node.textContent || ""));
+      if (seconds != null) return seconds;
+    }
+    return null;
+  }
+
+  function scoreYouTubePanel(panel, text, segments) {
+    let score = segments.length * 2;
+    const compact = String(text || "");
+
+    if (/转写|Transcript|Transkript/i.test(compact)) score += 50;
+    if (/搜索转写内容|Search transcript|Transcript search/i.test(compact)) {
+      score += 80;
+    }
+    if (
+      panel?.querySelector?.('input[placeholder*="转写"], input[placeholder*="transcript" i]')
+    ) {
+      score += 120;
+    }
+    if (
+      panel?.querySelector?.(
+        'button[aria-selected="true"], yt-chip-cloud-chip-renderer[aria-selected="true"]'
+      )
+    ) {
+      const activeText = cleanText(
+        panel.querySelector(
+          'button[aria-selected="true"], yt-chip-cloud-chip-renderer[aria-selected="true"]'
+        )?.innerText || ""
+      );
+      if (/转写|Transcript|Transkript/i.test(activeText)) score += 120;
+      if (/章节|Chapter/i.test(activeText)) score -= 150;
+    }
+    if (/章节|Chapter|Intro/i.test(compact)) score -= 80;
+    if (segments.length <= 5) score -= 40;
+
+    return score;
+  }
+
+  function parseTranscriptSegmentsFromText(rawText) {
+    const lines = String(rawText || "")
+      .split(/\r?\n/)
+      .map((line) => cleanText(line))
+      .filter(Boolean);
+    const segments = [];
+    let current = null;
+
+    const flush = () => {
+      if (!current?.timestamp || !current.parts?.length) return;
+      const text = cleanText(current.parts.join(" "));
+      if (!text) return;
+      const seconds = parseTimestampToSeconds(current.timestamp);
+      if (seconds == null) return;
+      segments.push({
+        id: `${formatTimestamp(seconds)}|${text}`.slice(0, 240),
+        text,
+        timestamp: formatTimestamp(seconds),
+        seconds,
+      });
+    };
+
+    for (const line of lines) {
+      const timestampOnly = line.match(/^((?:\d{1,2}:)?\d{1,2}:\d{2})$/);
+      if (timestampOnly) {
+        flush();
+        current = {
+          timestamp: timestampOnly[1],
+          parts: [],
+        };
+        continue;
+      }
+      const matched = line.match(/^((?:\d{1,2}:)?\d{1,2}:\d{2})\s+(.+)$/);
+      if (matched) {
+        flush();
+        current = {
+          timestamp: matched[1],
+          parts: [matched[2]],
+        };
+        continue;
+      }
+      if (current) {
+        current.parts.push(line);
+      }
+    }
+    flush();
+
+    return segments.filter(
+      (seg, idx, arr) => idx === 0 || seg.id !== arr[idx - 1]?.id
+    );
+  }
+
+  function extractBalancedObjectLiteral(source, marker) {
+    const raw = String(source || "");
+    const markerIndex = raw.indexOf(marker);
+    if (markerIndex < 0) return null;
+    const braceStart = raw.indexOf("{", markerIndex + marker.length);
+    if (braceStart < 0) return null;
+    let depth = 0;
+    let inString = false;
+    let quote = "";
+    let escaped = false;
+    for (let i = braceStart; i < raw.length; i += 1) {
+      const ch = raw[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === quote) {
+          inString = false;
+          quote = "";
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        inString = true;
+        quote = ch;
+        continue;
+      }
+      if (ch === "{") depth += 1;
+      if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          return raw.slice(braceStart, i + 1);
+        }
+      }
+    }
+    return null;
+  }
+
+  function getYouTubePlayerResponseFromInlineScripts() {
+    const scripts = Array.from(document.scripts || []);
+    for (const script of scripts) {
+      const text = script?.textContent || "";
+      if (!text || !text.includes("ytInitialPlayerResponse")) continue;
+      const jsonText = extractBalancedObjectLiteral(
+        text,
+        "ytInitialPlayerResponse"
+      );
+      if (!jsonText) continue;
+      try {
+        return JSON.parse(jsonText);
+      } catch (_) {
+        // ignore malformed candidate
+      }
+    }
+    return null;
+  }
+
+  function getYouTubePlayerResponse() {
+    try {
+      if (window?.ytInitialPlayerResponse) return window.ytInitialPlayerResponse;
+    } catch (_) {
+      // ignore
+    }
+    try {
+      const raw = window?.ytplayer?.config?.args?.player_response;
+      if (raw) return JSON.parse(raw);
+    } catch (_) {
+      // ignore
+    }
+    return getYouTubePlayerResponseFromInlineScripts();
+  }
+
+  function isYouTubeLiveContent() {
+    const response = getYouTubePlayerResponse();
+    return !!response?.videoDetails?.isLiveContent;
   }
 
   function renderDueSegments(currentTime, segments = lastSegments) {
@@ -1225,7 +1555,9 @@
     card.className = "spt-item";
     card.dataset.segmentId = segment.id;
     card.innerHTML = `
-      <div class="spt-original">${escapeHtml(segment.text)}</div>
+      <div class="spt-original">${escapeHtml(
+        formatOriginalForDisplay(segment.text)
+      )}</div>
       <div class="spt-translation">${escapeHtml(
         formatTranslationForDisplay(statusText, false)
       )}</div>
@@ -1247,7 +1579,9 @@
     if (!card) return;
     if (originalText) {
       const originalEl = card.querySelector(".spt-original");
-      if (originalEl) originalEl.textContent = originalText;
+      if (originalEl) {
+        originalEl.textContent = formatOriginalForDisplay(originalText);
+      }
     }
     const translationEl = card.querySelector(".spt-translation");
     translationEl.textContent = formatTranslationForDisplay(translationText, isError);
@@ -1285,30 +1619,36 @@
 
   function mergeTimestamp(timestamp, line) {
     if (!timestamp) return line;
-    const ts = timestamp.trim();
+    const ts = normalizeTimestampText(timestamp);
     if (!ts) return line;
     const combined = line.trim();
     const tsPattern = /^(\d{1,2}:)?\d{1,2}:\d{2}/;
     // if line already starts with a timestamp, don't double-prepend
-    if (tsPattern.test(combined)) {
-      return combined;
+    const normalizedCombined = normalizeTimestampText(combined);
+    if (tsPattern.test(normalizedCombined)) {
+      return normalizedCombined;
     }
     return `${ts} ${combined}`;
   }
 
   function stripLeadingTimestamp(text) {
-    const s = (text || "").trimStart();
+    const s = normalizeTimestampText((text || "").trimStart());
     return s.replace(/^(\d{1,2}:)?\d{1,2}:\d{2}\s+/, "");
   }
 
   function formatTranslationForDisplay(text, isError) {
     if (isError) return text || "";
-    if (!HIDE_TRANSLATION_TIMESTAMP) return text || "";
-    return stripLeadingTimestamp(text || "");
+    const normalized = normalizeTimestampText(text || "");
+    if (!HIDE_TRANSLATION_TIMESTAMP) return normalized;
+    return stripLeadingTimestamp(normalized);
+  }
+
+  function formatOriginalForDisplay(text) {
+    return normalizeTimestampText(text || "");
   }
 
   function cleanTranslatedLine(line, originalTs) {
-    let out = (line || "").trim();
+    let out = normalizeTimestampText((line || "").trim());
     // remove embedded line markers like <<LINE N>>
     out = out.replace(/<<\s*LINE\s*\d+\s*>>\s*/gi, "");
     // strip leading numbering like "1. " or "1) " or "1:" etc.
@@ -1316,13 +1656,30 @@
     // strip any leading timestamp-like pattern
     out = out.replace(/^(\d{1,2}:)?\d{1,2}:\d{2}\s*/, "");
     // if model echoed the original timestamp anywhere at the start, remove it
-    const ts = (originalTs || "").trim();
+    const ts = normalizeTimestampText((originalTs || "").trim());
     if (ts && out.startsWith(ts)) {
       out = out.slice(ts.length).trim();
     }
     // remove any duplicated timestamp prefix again
     out = out.replace(/^(\d{1,2}:)?\d{1,2}:\d{2}\s*/, "");
     return out;
+  }
+
+  function normalizeTimestampText(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return "";
+    const normalizedColon = raw.replace(/：/g, ":");
+    const parts = normalizedColon.match(
+      /^(?:(\d{1,2})\s*小时\s*)?(?:(\d{1,2})\s*分(?:钟)?\s*)?(\d{1,2})\s*秒(?:钟)?(.*)$/
+    );
+    if (parts) {
+      const hours = parts[1] ? parseInt(parts[1], 10) : 0;
+      const minutes = parts[2] ? parseInt(parts[2], 10) : 0;
+      const seconds = parseInt(parts[3], 10);
+      const suffix = parts[4] || "";
+      return `${formatTimestamp(hours * 3600 + minutes * 60 + seconds)}${suffix}`;
+    }
+    return normalizedColon;
   }
 
   function ensureChunkBuffer(chunkId, expected) {
