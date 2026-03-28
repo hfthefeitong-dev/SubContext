@@ -1613,7 +1613,7 @@
 
   async function copyOriginalText(card) {
     const raw = card?.dataset?.originalText || "";
-    const text = formatOriginalForDisplay(raw).trim();
+    const text = stripLeadingTimestamp(formatOriginalForDisplay(raw)).trim();
     if (!text) return;
     try {
       if (navigator.clipboard?.writeText) {
