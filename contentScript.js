@@ -1554,6 +1554,8 @@
     const card = document.createElement("div");
     card.className = "spt-item";
     card.dataset.segmentId = segment.id;
+    card.dataset.originalText = segment.text || "";
+    card.title = "点击复制原文";
     card.innerHTML = `
       <div class="spt-original">${escapeHtml(
         formatOriginalForDisplay(segment.text)
@@ -1562,6 +1564,9 @@
         formatTranslationForDisplay(statusText, false)
       )}</div>
     `;
+    card.addEventListener("click", () => {
+      void copyOriginalText(card);
+    });
     listEl.prepend(card);
     entryMap.set(segment.id, card);
     trimList();
@@ -1578,6 +1583,7 @@
     const card = entryMap.get(id);
     if (!card) return;
     if (originalText) {
+      card.dataset.originalText = originalText;
       const originalEl = card.querySelector(".spt-original");
       if (originalEl) {
         originalEl.textContent = formatOriginalForDisplay(originalText);
@@ -1603,6 +1609,43 @@
     const last = lines[lines.length - 1];
     while (lines.length < expected) lines.push(last);
     return lines;
+  }
+
+  async function copyOriginalText(card) {
+    const raw = card?.dataset?.originalText || "";
+    const text = formatOriginalForDisplay(raw).trim();
+    if (!text) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const input = document.createElement("textarea");
+        input.value = text;
+        input.setAttribute("readonly", "readonly");
+        input.style.position = "fixed";
+        input.style.opacity = "0";
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        input.remove();
+      }
+      flashCopiedState(card, "已复制原文");
+    } catch (_) {
+      flashCopiedState(card, "复制失败");
+    }
+  }
+
+  function flashCopiedState(card, message) {
+    if (!card) return;
+    const previous = card.dataset.copyState || "";
+    const originalTitle = card.title || "";
+    card.dataset.copyState = message || "已复制";
+    card.title = message || "已复制";
+    clearTimeout(card.__sptCopyTimer);
+    card.__sptCopyTimer = setTimeout(() => {
+      card.dataset.copyState = previous;
+      card.title = originalTitle || "点击复制原文";
+    }, 1200);
   }
 
   function trimList() {
@@ -1882,13 +1925,29 @@
         /* 加一个左侧装饰线，提升层次感 */
         border-left: 3px solid transparent; 
         padding-left: 10px;
-        transition: border-color 0.3s;
+        transition: border-color 0.3s, background-color 0.2s ease, transform 0.15s ease;
         font-family: inherit;
+        cursor: pointer;
+        position: relative;
       }
       
       /* 鼠标悬停时显示一点点高亮 */
       .spt-item:hover {
         border-left-color: #6366f1; 
+        background: rgba(99, 102, 241, 0.05);
+      }
+
+      .spt-item:active {
+        transform: scale(0.995);
+      }
+
+      .spt-item[data-copy-state]:not([data-copy-state=""])::after {
+        content: attr(data-copy-state);
+        position: absolute;
+        top: -2px;
+        right: 0;
+        font-size: 11px;
+        color: #0c713a;
       }
 
       /* 原文：调淡一点，作为辅助信息 */
