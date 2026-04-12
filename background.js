@@ -16,7 +16,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (Array.isArray(message.segments)) {
       logTranslateBatch(message.segments);
       translateBatch(message.segments, message.context)
-        .then((translation) => sendResponse({ ok: true, translation }))
+        .then((result) => sendResponse({ ok: true, ...result }))
         .catch((error) =>
           sendResponse({ ok: false, error: error?.message || String(error) })
         );
@@ -110,6 +110,7 @@ async function getConfig() {
     prefetchAhead: DEFAULT_CONTEXT_LINES,
     temperature: DEFAULT_TEMPERATURE,
     smoothLines: DEFAULT_SMOOTH_LINES,
+    enableSourceCorrections: false,
   });
 
   const contextLines = clampInt(stored.prefetchAhead, 0, 50, DEFAULT_CONTEXT_LINES);
@@ -136,6 +137,7 @@ async function getConfig() {
     contextLines,
     smoothLines,
     geminiThinkingLevel,
+    enableSourceCorrections: !!stored.enableSourceCorrections,
   };
 }
 
@@ -210,24 +212,17 @@ async function translateBatch(segments = [], context = {}) {
   });
 
   let translation = "";
+  const userPrompt = buildBatchTranslationPrompt(
+    currentLines,
+    config.enableSourceCorrections
+  );
 
   if (isGeminiModel(config.model)) {
     translation = await sendGeminiRequest({
       config,
       messages: [
         ...contextMessages,
-        {
-          role: "user",
-          content: [
-            "Translate the following lines to natural Simplified Chinese.",
-            "Return exactly one translated line for each input line.",
-            "Echo the marker for each line using the same format: <<LINE N>> <translation>.",
-            "Input lines:",
-            currentLines
-              .map((line, idx) => `<<LINE ${idx + 1}>> ${line}`)
-              .join("\n"),
-          ].join("\n"),
-        },
+        { role: "user", content: userPrompt },
       ],
       requestLabel: "Translation request",
       missingMessage: "Translation missing in Gemini API response.",
@@ -237,18 +232,7 @@ async function translateBatch(segments = [], context = {}) {
       model: config.model || DEFAULT_MODEL,
       messages: [
         ...contextMessages,
-        {
-          role: "user",
-          content: [
-            "Translate the following lines to natural Simplified Chinese.",
-            "Return exactly one translated line for each input line.",
-            "Echo the marker for each line using the same format: <<LINE N>> <translation>.",
-            "Input lines:",
-            currentLines
-              .map((line, idx) => `<<LINE ${idx + 1}>> ${line}`)
-              .join("\n"),
-          ].join("\n"),
-        },
+        { role: "user", content: userPrompt },
       ],
       temperature: forceHighTemperature(config),
     };
@@ -264,11 +248,54 @@ async function translateBatch(segments = [], context = {}) {
     throw new Error("Translation missing in API response.");
   }
 
-  const parsed = parseDelimitedTranslation(translation, currentLines.length);
-  pushRecentTranslation(parsed, config.contextLines);
+  const parsed = parseBatchTranslationResult(
+    translation,
+    currentLines,
+    config.enableSourceCorrections
+  );
+  pushRecentTranslation(
+    parsed.map((line) => line.translation),
+    config.contextLines
+  );
   // keep originals for context in subsequent requests
   currentLines.forEach((line) => pushRecent(line, config.contextLines));
-  return parsed.join("\n");
+  return {
+    translation: parsed.map((line) => line.translation).join("\n"),
+    lines: parsed,
+  };
+}
+
+function buildBatchTranslationPrompt(currentLines = [], enableSourceCorrections = false) {
+  if (!enableSourceCorrections) {
+    return [
+      "Translate the following lines to natural Simplified Chinese.",
+      "Return exactly one translated line for each input line.",
+      "Echo the marker for each line using the same format: <<LINE N>> <translation>.",
+      "Input lines:",
+      currentLines
+        .map((line, idx) => `<<LINE ${idx + 1}>> ${line}`)
+        .join("\n"),
+    ].join("\n");
+  }
+
+  return [
+    "Translate the following lines to natural Simplified Chinese.",
+    "Also detect only high-confidence spelling / ASR mistakes in the source text.",
+    "Return valid JSON only. Do not use markdown fences.",
+    'Schema: {"lines":[{"line":1,"translation":"...","corrections":[{"originalText":"...","correctedText":"..."}]}]}',
+    'Rules for "corrections":',
+    '- Use "corrections" as an array of zero or more correction objects for each line.',
+    '- Each correction object must contain only one mistaken word or short phrase in "originalText" and its corrected form in "correctedText".',
+    '- If there is no high-confidence correction for a line, return "corrections": [].',
+    '- If a line contains multiple high-confidence mistakes, include multiple objects in "corrections", ordered from left to right in the source line.',
+    '- Keep names, titles, lyrics, slang, and uncommon words conservative when uncertain.',
+    '- The "translation" should reflect the corrected meaning only when correction confidence is high.',
+    `Return exactly ${currentLines.length} items in "lines", in the same order.`,
+    "Input lines:",
+    currentLines
+      .map((line, idx) => `${idx + 1}. ${line}`)
+      .join("\n"),
+  ].join("\n");
 }
 
 async function smoothTranslations(
@@ -554,6 +581,110 @@ function parseDelimitedTranslation(text, expected) {
   }
 
   return result;
+}
+
+function parseBatchTranslationResult(rawText, currentLines, enableSourceCorrections) {
+  if (!enableSourceCorrections) {
+    return parseDelimitedTranslation(rawText, currentLines.length).map(
+      (translation, idx) => ({
+        line: idx + 1,
+        translation,
+        corrections: [],
+      })
+    );
+  }
+
+  const parsed = parseCorrectionJson(rawText, currentLines.length);
+  if (!parsed) {
+    return parseDelimitedTranslation(rawText, currentLines.length).map(
+      (translation, idx) => ({
+        line: idx + 1,
+        translation,
+        corrections: [],
+      })
+    );
+  }
+
+  return currentLines.map((originalLine, idx) => {
+    const item = parsed[idx] || {};
+    const translation = String(
+      item.translation || item.translatedText || item.text || ""
+    ).trim();
+    return {
+      line: idx + 1,
+      translation,
+      corrections: normalizeCorrections(item, originalLine),
+    };
+  });
+}
+
+function parseCorrectionJson(rawText, expected) {
+  const cleaned = stripJsonCodeFence(rawText);
+  if (!cleaned) return null;
+  try {
+    const parsed = JSON.parse(cleaned);
+    const lines = Array.isArray(parsed) ? parsed : parsed?.lines;
+    if (!Array.isArray(lines) || !lines.length) return null;
+    return lines.slice(0, expected);
+  } catch (_) {
+    return null;
+  }
+}
+
+function stripJsonCodeFence(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+  const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenced ? fenced[1].trim() : raw;
+}
+
+function normalizeCorrectedText(correctedText, originalText) {
+  const corrected = String(correctedText || "").trim();
+  const original = String(originalText || "").trim();
+  if (!corrected) return "";
+  if (normalizeCompareText(corrected) === normalizeCompareText(original)) {
+    return "";
+  }
+  return corrected;
+}
+
+function normalizeCorrections(item, originalLine) {
+  const list = Array.isArray(item?.corrections)
+    ? item.corrections
+    : item?.originalText || item?.correctedText
+      ? [
+          {
+            originalText: item.originalText,
+            correctedText: item.correctedText,
+          },
+        ]
+      : [];
+
+  return list
+    .map((entry) => ({
+      originalText: String(entry?.originalText || "").trim(),
+      correctedText: normalizeCorrectedText(
+        entry?.correctedText,
+        entry?.originalText
+      ),
+    }))
+    .filter(
+      (entry) =>
+        entry.originalText &&
+        entry.correctedText &&
+        normalizeCompareText(entry.originalText) !==
+          normalizeCompareText(entry.correctedText) &&
+        normalizeCompareText(originalLine).includes(
+          normalizeCompareText(entry.originalText)
+        )
+    );
+}
+
+function normalizeCompareText(text) {
+  return String(text || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
 }
 
 function stripTimestamps(text) {

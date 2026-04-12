@@ -25,6 +25,7 @@
   const submittedIds = new Set(); // segments already sent for translation
   const renderedIds = new Set(); // segments already shown in UI
   const translationCache = new Map(); // id -> translated text
+  const sourceCorrectionCache = new Map(); // id -> { originalText, correctedText }
   const retryAfterById = new Map(); // id -> next retry timestamp
   const translationQueue = [];
   const entryMap = new Map();
@@ -63,6 +64,7 @@
   const DEFAULT_ORIGINAL_COLOR_SCHEME = "dark";
   const DEFAULT_TRANSLATION_COLOR_SCHEME = "dark";
   const DEFAULT_HIDE_TRANSLATION_TIMESTAMP = false;
+  const DEFAULT_ENABLE_SOURCE_CORRECTIONS = false;
   const COLOR_MAP = {
     dark: {
       original: "#0f172a",
@@ -84,6 +86,7 @@
   let ORIGINAL_COLOR_SCHEME = DEFAULT_ORIGINAL_COLOR_SCHEME;
   let TRANSLATION_COLOR_SCHEME = DEFAULT_TRANSLATION_COLOR_SCHEME;
   let HIDE_TRANSLATION_TIMESTAMP = DEFAULT_HIDE_TRANSLATION_TIMESTAMP;
+  let ENABLE_SOURCE_CORRECTIONS = DEFAULT_ENABLE_SOURCE_CORRECTIONS;
   const STORAGE_KEY_POSITION = "sptPosition";
   const hookedVideos = new WeakSet();
   const hookedTracks = new WeakSet();
@@ -170,6 +173,7 @@
     submittedIds.clear();
     renderedIds.clear();
     translationCache.clear();
+    sourceCorrectionCache.clear();
     retryAfterById.clear();
     translationQueue.length = 0;
     chunkBuffers.clear();
@@ -180,6 +184,7 @@
     lastPrefetchedChunkId = -1;
     sessionVersion += 1;
     safeSendMessage({ type: "resetContext" }, { ok: false });
+    hideCorrectionPopup();
     if (clearUi) {
       entryMap.clear();
       if (listEl) listEl.innerHTML = "";
@@ -256,6 +261,7 @@
   let fontDecButton = null;
   let fontIncButton = null;
   let closeButton = null;
+  let correctionPopup = null;
   let scanTimer = null;
   let observer = null;
   let storageListenerAttached = false;
@@ -314,6 +320,7 @@
   function stopOverlayWork() {
     overlayEnabled = false;
     overlayClosed = true;
+    hideCorrectionPopup();
 
     if (scanTimer) {
       clearTimeout(scanTimer);
@@ -645,6 +652,7 @@
         panelWidthVw: DEFAULT_PANEL_WIDTH_VW,
         fontOriginal: DEFAULT_FONT_ORIGINAL,
         fontTranslation: DEFAULT_FONT_TRANSLATION,
+        enableSourceCorrections: DEFAULT_ENABLE_SOURCE_CORRECTIONS,
         hideTranslationTimestamp: DEFAULT_HIDE_TRANSLATION_TIMESTAMP,
         originalColorScheme: DEFAULT_ORIGINAL_COLOR_SCHEME,
         translationColorScheme: DEFAULT_TRANSLATION_COLOR_SCHEME,
@@ -691,6 +699,7 @@
           24,
           DEFAULT_FONT_TRANSLATION
         );
+        ENABLE_SOURCE_CORRECTIONS = !!res.enableSourceCorrections;
         HIDE_TRANSLATION_TIMESTAMP = !!res.hideTranslationTimestamp;
         applyColorScheme(
           res.originalColorScheme || DEFAULT_ORIGINAL_COLOR_SCHEME,
@@ -783,6 +792,11 @@
         DEFAULT_FONT_TRANSLATION
       );
       applyFontSizes();
+    }
+    if (changes.enableSourceCorrections) {
+      ENABLE_SOURCE_CORRECTIONS = !!changes.enableSourceCorrections.newValue;
+      resetTranslationState({ clearUi: true });
+      scheduleScan();
     }
     if (changes.hideTranslationTimestamp) {
       HIDE_TRANSLATION_TIMESTAMP = !!changes.hideTranslationTimestamp.newValue;
@@ -1372,14 +1386,17 @@
       throw new Error(response.error || "Translation failed");
     }
     if (batchSessionVersion !== sessionVersion) return;
-    const lines = normalizeTranslationLines(response.translation, batch.length);
+    const lineResults = normalizeLineResults(response, batch);
     const cleanedLines = [];
     const touchedChunks = new Set();
     batch.forEach((segment, idx) => {
-      const rawLine = lines[idx] || response.translation || "";
+      const result = lineResults[idx] || {};
+      const rawLine = result.translation || response.translation || "";
       const cleaned = cleanTranslatedLine(rawLine, segment.timestamp);
+      const correction = normalizeCorrectionResult(result, segment.text);
       cleanedLines.push(cleaned);
       retryAfterById.delete(segment.id);
+      sourceCorrectionCache.set(segment.id, correction);
       if (
         typeof segment.chunkId === "number" &&
         Number.isInteger(segment.chunkOrder)
@@ -1429,6 +1446,63 @@
         renderDueSegments(t, lastSegments);
       }
     }
+  }
+
+  function normalizeLineResults(response, batch) {
+    if (Array.isArray(response?.lines) && response.lines.length) {
+      return batch.map((segment, idx) => ({
+        translation:
+          response.lines[idx]?.translation ||
+          response.lines[idx]?.text ||
+          "",
+        corrections:
+          response.lines[idx]?.corrections ||
+          (response.lines[idx]?.originalText || response.lines[idx]?.correctedText
+            ? [
+                {
+                  originalText: response.lines[idx]?.originalText || "",
+                  correctedText: response.lines[idx]?.correctedText || "",
+                },
+              ]
+            : []),
+      }));
+    }
+
+    const lines = normalizeTranslationLines(response?.translation, batch.length);
+    return batch.map((segment, idx) => ({
+      translation: lines[idx] || response?.translation || "",
+      corrections: [],
+    }));
+  }
+
+  function normalizeCorrectionResult(result, fallbackOriginalText) {
+    const rawCorrections = Array.isArray(result?.corrections)
+      ? result.corrections
+      : result?.originalText || result?.correctedText
+        ? [
+            {
+              originalText: result?.originalText || "",
+              correctedText: result?.correctedText || "",
+            },
+          ]
+        : [];
+    const corrections = rawCorrections
+      .map((entry) => {
+        const originalText = String(entry?.originalText || "").trim();
+        const correctedText = normalizeCorrectedLine(
+          entry?.correctedText,
+          originalText
+        );
+        return {
+          originalText,
+          correctedText,
+        };
+      })
+      .filter((entry) => entry.originalText && entry.correctedText);
+    return {
+      corrections,
+      originalLine: String(fallbackOriginalText || "").trim(),
+    };
   }
 
   function sendTranslationRequest(batch) {
@@ -1556,16 +1630,60 @@
     card.className = "spt-item";
     card.dataset.segmentId = segment.id;
     card.dataset.originalText = segment.text || "";
-    card.title = "点击复制原文";
     card.innerHTML = `
-      <div class="spt-original">${escapeHtml(
-        formatOriginalForDisplay(segment.text)
-      )}</div>
+      <div class="spt-original"></div>
       <div class="spt-translation">${escapeHtml(
         formatTranslationForDisplay(statusText, false)
       )}</div>
     `;
-    card.addEventListener("click", () => {
+    syncCardCopyHint(card);
+    renderOriginalText(card, segment.text);
+    card.addEventListener("mouseover", (event) => {
+      const correctionTrigger = event.target?.closest?.(".spt-corrected-token");
+      if (!correctionTrigger || !card.contains(correctionTrigger)) return;
+      setCardCopyHintSuppressed(card, true);
+      showCorrectionPopup(correctionTrigger, card.dataset.segmentId);
+    });
+    card.addEventListener("mouseout", (event) => {
+      const correctionTrigger = event.target?.closest?.(".spt-corrected-token");
+      if (!correctionTrigger || !card.contains(correctionTrigger)) return;
+      const related = event.relatedTarget;
+      if (
+        correctionTrigger.contains?.(related) ||
+        correctionPopup?.contains?.(related) ||
+        related?.closest?.(".spt-corrected-token")
+      ) {
+        return;
+      }
+      setCardCopyHintSuppressed(card, false);
+      hideCorrectionPopup();
+    });
+    card.addEventListener("focusin", (event) => {
+      const correctionTrigger = event.target?.closest?.(".spt-corrected-token");
+      if (!correctionTrigger || !card.contains(correctionTrigger)) return;
+      setCardCopyHintSuppressed(card, true);
+      showCorrectionPopup(correctionTrigger, card.dataset.segmentId);
+    });
+    card.addEventListener("focusout", (event) => {
+      const correctionTrigger = event.target?.closest?.(".spt-corrected-token");
+      if (!correctionTrigger || !card.contains(correctionTrigger)) return;
+      const related = event.relatedTarget;
+      if (
+        correctionPopup?.contains?.(related) ||
+        related?.closest?.(".spt-corrected-token")
+      ) {
+        return;
+      }
+      setCardCopyHintSuppressed(card, false);
+      hideCorrectionPopup();
+    });
+    card.addEventListener("click", (event) => {
+      const correctionTrigger = event.target?.closest?.(".spt-corrected-token");
+      if (correctionTrigger) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       void copyOriginalText(card);
     });
     listEl.prepend(card);
@@ -1585,10 +1703,7 @@
     if (!card) return;
     if (originalText) {
       card.dataset.originalText = originalText;
-      const originalEl = card.querySelector(".spt-original");
-      if (originalEl) {
-        originalEl.textContent = formatOriginalForDisplay(originalText);
-      }
+      renderOriginalText(card, originalText);
     }
     const translationEl = card.querySelector(".spt-translation");
     translationEl.textContent = formatTranslationForDisplay(translationText, isError);
@@ -1599,6 +1714,12 @@
       translationEl.style.color = "var(--spt-translation-color, #1f2937)";
       delete translationEl.dataset.error;
     }
+  }
+
+  function renderOriginalText(card, originalText) {
+    const originalEl = card?.querySelector?.(".spt-original");
+    if (!originalEl) return;
+    originalEl.innerHTML = buildOriginalLineHtml(card.dataset.segmentId, originalText);
   }
 
   function normalizeTranslationLines(text, expected) {
@@ -1639,14 +1760,32 @@
   function flashCopiedState(card, message) {
     if (!card) return;
     const previous = card.dataset.copyState || "";
-    const originalTitle = card.title || "";
     card.dataset.copyState = message || "已复制";
-    card.title = message || "已复制";
+    syncCardCopyHint(card);
     clearTimeout(card.__sptCopyTimer);
     card.__sptCopyTimer = setTimeout(() => {
       card.dataset.copyState = previous;
-      card.title = originalTitle || "点击复制原文";
+      syncCardCopyHint(card);
     }, 1200);
+  }
+
+  function setCardCopyHintSuppressed(card, suppressed) {
+    if (!card) return;
+    if (suppressed) {
+      card.dataset.copyHintSuppressed = "1";
+    } else {
+      delete card.dataset.copyHintSuppressed;
+    }
+    syncCardCopyHint(card);
+  }
+
+  function syncCardCopyHint(card) {
+    if (!card) return;
+    if (card.dataset.copyHintSuppressed === "1") {
+      card.title = "";
+      return;
+    }
+    card.title = card.dataset.copyState || "点击复制原文";
   }
 
   function trimList() {
@@ -1657,6 +1796,7 @@
     for (let i = limit; i < cards.length; i += 1) {
       const card = cards[i];
       entryMap.delete(card.dataset.segmentId);
+       sourceCorrectionCache.delete(card.dataset.segmentId);
       card.remove();
     }
   }
@@ -1689,6 +1829,195 @@
 
   function formatOriginalForDisplay(text) {
     return normalizeTimestampText(text || "");
+  }
+
+  function normalizeCorrectedLine(correctedText, originalText) {
+    const corrected = String(correctedText || "").trim();
+    const original = String(originalText || "").trim();
+    if (!corrected) return "";
+    if (normalizeCompareText(corrected) === normalizeCompareText(original)) {
+      return "";
+    }
+    return corrected;
+  }
+
+  function normalizeCompareText(text) {
+    return String(text || "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .toLowerCase();
+  }
+
+  function buildOriginalLineHtml(segmentId, originalText) {
+    const displayedOriginal = formatOriginalForDisplay(originalText);
+    const correction = sourceCorrectionCache.get(segmentId);
+    const corrections = Array.isArray(correction?.corrections)
+      ? correction.corrections
+      : [];
+
+    if (!ENABLE_SOURCE_CORRECTIONS || !corrections.length) {
+      return escapeHtml(displayedOriginal);
+    }
+
+    const fragments = buildCorrectionFragments(displayedOriginal, corrections);
+    if (!fragments.length || !fragments.some((fragment) => fragment.changed)) {
+      return escapeHtml(displayedOriginal);
+    }
+
+    return fragments
+      .map((fragment) =>
+        fragment.changed
+          ? `<span class="spt-corrected-token" tabindex="0" data-correction-index="${fragment.index}">${escapeHtml(
+              fragment.text
+            )}</span>`
+          : escapeHtml(fragment.text)
+      )
+      .join("");
+  }
+
+  function buildCorrectionFragments(lineText, corrections = []) {
+    const line = String(lineText || "");
+    const fragments = [];
+    let cursor = 0;
+    let matched = false;
+
+    corrections.forEach((entry, idx) => {
+      const originalPhrase = String(entry?.originalText || "").trim();
+      const correctedText = normalizeCorrectedLine(
+        entry?.correctedText,
+        originalPhrase
+      );
+      if (!originalPhrase || !correctedText) return;
+      const phraseMatch = findPhraseRange(line, originalPhrase, cursor);
+      if (!phraseMatch) return;
+      if (phraseMatch.start > cursor) {
+        fragments.push({
+          text: line.slice(cursor, phraseMatch.start),
+          changed: false,
+        });
+      }
+      fragments.push({
+        text: correctedText,
+        changed: true,
+        index: idx,
+      });
+      cursor = phraseMatch.end;
+      matched = true;
+    });
+
+    if (cursor < line.length) {
+      fragments.push({
+        text: line.slice(cursor),
+        changed: false,
+      });
+    }
+
+    return matched ? fragments : [];
+  }
+
+  function findPhraseRange(lineText, phraseText, fromIndex = 0) {
+    const line = String(lineText || "");
+    const phrase = String(phraseText || "").trim();
+    if (!line || !phrase) return null;
+
+    let start = line.indexOf(phrase, Math.max(0, fromIndex));
+    if (start >= 0) {
+      return { start, end: start + phrase.length };
+    }
+
+    const lowerLine = line.toLowerCase();
+    const lowerPhrase = phrase.toLowerCase();
+    start = lowerLine.indexOf(lowerPhrase, Math.max(0, fromIndex));
+    if (start >= 0) {
+      return { start, end: start + phrase.length };
+    }
+
+    return null;
+  }
+
+  function showCorrectionPopup(anchorEl, segmentId) {
+    const correction = sourceCorrectionCache.get(segmentId);
+    const correctionIndex = parseInt(
+      anchorEl?.dataset?.correctionIndex || "-1",
+      10
+    );
+    const item = Array.isArray(correction?.corrections)
+      ? correction.corrections[correctionIndex]
+      : null;
+    if (!item?.correctedText) return;
+    ensureCorrectionPopup();
+    if (!correctionPopup) return;
+    correctionPopup.dataset.segmentId = segmentId || "";
+    correctionPopup.innerHTML = `
+      <div class="spt-correction-title">原文校正</div>
+      <div class="spt-correction-label">原文片段</div>
+      <div class="spt-correction-value">${escapeHtml(
+        formatOriginalForDisplay(item.originalText || "")
+      )}</div>
+      <div class="spt-correction-label">校正后片段</div>
+      <div class="spt-correction-value">${escapeHtml(
+        formatOriginalForDisplay(item.correctedText)
+      )}</div>
+    `;
+    correctionPopup.style.display = "block";
+    positionCorrectionPopup(anchorEl);
+  }
+
+  function ensureCorrectionPopup() {
+    if (correctionPopup) return;
+    correctionPopup = document.createElement("div");
+    correctionPopup.className = "spt-correction-popup";
+    correctionPopup.style.display = "none";
+    correctionPopup.addEventListener("mouseleave", () => {
+      const segmentId = correctionPopup.dataset.segmentId || "";
+      if (segmentId) {
+        setCardCopyHintSuppressed(entryMap.get(segmentId), false);
+      }
+      hideCorrectionPopup();
+    });
+    document.documentElement.appendChild(correctionPopup);
+    document.addEventListener("click", handleDocumentClickForCorrectionPopup);
+    window.addEventListener("resize", hideCorrectionPopup);
+    window.addEventListener("scroll", hideCorrectionPopup, true);
+  }
+
+  function handleDocumentClickForCorrectionPopup(event) {
+    if (!correctionPopup || correctionPopup.style.display === "none") return;
+    const target = event.target;
+    if (correctionPopup.contains(target)) return;
+    if (target?.closest?.(".spt-corrected-token")) return;
+    hideCorrectionPopup();
+  }
+
+  function hideCorrectionPopup() {
+    if (!correctionPopup) return;
+    const segmentId = correctionPopup.dataset.segmentId || "";
+    if (segmentId) {
+      setCardCopyHintSuppressed(entryMap.get(segmentId), false);
+    }
+    correctionPopup.dataset.segmentId = "";
+    correctionPopup.style.display = "none";
+  }
+
+  function positionCorrectionPopup(anchorEl) {
+    if (!correctionPopup || !anchorEl) return;
+    const rect = anchorEl.getBoundingClientRect();
+    correctionPopup.style.visibility = "hidden";
+    correctionPopup.style.left = "12px";
+    correctionPopup.style.top = "12px";
+    const popupWidth = correctionPopup.offsetWidth;
+    const popupHeight = correctionPopup.offsetHeight;
+    let left = Math.min(
+      window.innerWidth - popupWidth - 12,
+      Math.max(12, rect.left)
+    );
+    let top = rect.bottom + 10;
+    if (top + popupHeight > window.innerHeight - 12) {
+      top = Math.max(12, rect.top - popupHeight - 10);
+    }
+    correctionPopup.style.left = `${left}px`;
+    correctionPopup.style.top = `${top}px`;
+    correctionPopup.style.visibility = "visible";
   }
 
   function cleanTranslatedLine(line, originalTs) {
@@ -2002,6 +2331,19 @@
         letter-spacing: 0.02em;
       }
 
+      .spt-corrected-token {
+        color: #2563eb;
+        cursor: pointer;
+        font-weight: 600;
+        border-radius: 4px;
+      }
+
+      .spt-corrected-token:hover,
+      .spt-corrected-token:focus {
+        background: rgba(37, 99, 235, 0.12);
+        outline: none;
+      }
+
       /* 译文：深色，强调，加粗 */
       .spt-translation {
         font-size: var(--spt-translation-size, 14px);
@@ -2023,6 +2365,38 @@
         cursor: ew-resize;
         background: linear-gradient(to left, rgba(0,0,0,0.03), transparent);
         z-index: 10;
+      }
+
+      .spt-correction-popup {
+        position: fixed;
+        z-index: 100000;
+        max-width: min(360px, calc(100vw - 24px));
+        padding: 12px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.96);
+        border: 1px solid rgba(37, 99, 235, 0.18);
+        box-shadow: 0 10px 30px rgba(15, 23, 42, 0.16);
+        color: #0f172a;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .spt-correction-title {
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 8px;
+      }
+
+      .spt-correction-label {
+        font-size: 11px;
+        font-weight: 700;
+        color: #475569;
+        margin-top: 8px;
+      }
+
+      .spt-correction-value {
+        white-space: pre-wrap;
+        word-break: break-word;
       }
 
       /* 移动端适配 */

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "字幕上下文翻译先锋版",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "实时抓取字幕（Spotify等）并结合上下文翻译为中文的扩展。",
   "icons": {
     "16": "logo.png",

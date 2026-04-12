@@ -8,6 +8,7 @@ const defaults = {
   batchSize: 8,
   prefetchAhead: 8,
   smoothLines: 3,
+  enableSourceCorrections: false,
   hideTranslationTimestamp: false,
   originalColorScheme: "dark",
   translationColorScheme: "dark",
@@ -22,6 +23,7 @@ const geminiThinkingLevelSelect = document.getElementById("geminiThinkingLevel")
 const batchSizeInput = document.getElementById("batchSize");
 const prefetchAheadInput = document.getElementById("prefetchAhead");
 const smoothLinesInput = document.getElementById("smoothLines");
+const enableSourceCorrectionsInput = document.getElementById("enableSourceCorrections");
 const hideTranslationTimestampInput = document.getElementById("hideTranslationTimestamp");
 const originalColorSelect = document.getElementById("originalColorScheme");
 const translationColorSelect = document.getElementById("translationColorScheme");
@@ -59,6 +61,8 @@ async function init() {
   const smooth = stored.smoothLines ?? defaults.smoothLines;
   smoothLinesInput.value = smooth;
   syncSegmentControls();
+  enableSourceCorrectionsInput.checked =
+    !!(stored.enableSourceCorrections ?? defaults.enableSourceCorrections);
   hideTranslationTimestampInput.checked =
     !!(stored.hideTranslationTimestamp ?? defaults.hideTranslationTimestamp);
   originalColorSelect.value = stored.originalColorScheme || defaults.originalColorScheme;
@@ -102,6 +106,7 @@ saveBtn.addEventListener("click", async () => {
           prefetchAhead,
           defaults.smoothLines
         );
+  const enableSourceCorrections = !!enableSourceCorrectionsInput.checked;
   const hideTranslationTimestamp = !!hideTranslationTimestampInput.checked;
   const originalColorScheme = originalColorSelect.value === "green" ? "green" : "dark";
   const translationColorScheme =
@@ -123,6 +128,7 @@ saveBtn.addEventListener("click", async () => {
     batchSize,
     prefetchAhead,
     smoothLines,
+    enableSourceCorrections,
     hideTranslationTimestamp,
     originalColorScheme,
     translationColorScheme,
