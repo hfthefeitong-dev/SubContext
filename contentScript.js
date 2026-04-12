@@ -577,7 +577,8 @@
 
   function parseTimestampToSeconds(ts) {
     if (!ts) return null;
-    const parts = ts.split(":").map((p) => parseInt(p, 10));
+    const normalized = normalizeTimestampText(ts);
+    const parts = normalized.split(":").map((p) => parseInt(p, 10));
     if (parts.some((n) => Number.isNaN(n))) return null;
     while (parts.length < 3) parts.unshift(0); // pad to [h,m,s]
     const [h, m, s] = parts;
@@ -1703,8 +1704,50 @@
     if (ts && out.startsWith(ts)) {
       out = out.slice(ts.length).trim();
     }
+    out = stripLocalizedTimestampPrefix(out, originalTs);
     // remove any duplicated timestamp prefix again
     out = out.replace(/^(\d{1,2}:)?\d{1,2}:\d{2}\s*/, "");
+    return out;
+  }
+
+  function stripLocalizedTimestampPrefix(text, originalTs) {
+    const out = String(text || "").trimStart();
+    const totalSeconds = parseTimestampToSeconds(normalizeTimestampText(originalTs || ""));
+    if (!out || totalSeconds == null) return out;
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const variants = [];
+
+    if (hours > 0) {
+      variants.push(
+        `${hours}小时${minutes}分${seconds}秒`,
+        `${hours}小时${minutes}分钟${seconds}秒`,
+        `${hours}小时${minutes}分`,
+        `${hours}小时${minutes}分钟`
+      );
+      if (minutes === 0 && seconds === 0) {
+        variants.push(`${hours}小时`);
+      }
+    } else if (minutes > 0) {
+      variants.push(
+        `${minutes}分${seconds}秒`,
+        `${minutes}分钟${seconds}秒`,
+        `${minutes}分`,
+        `${minutes}分钟`
+      );
+    } else {
+      variants.push(`${seconds}秒`, `${seconds}秒钟`);
+    }
+
+    for (const variant of variants) {
+      if (!variant) continue;
+      const escaped = variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = new RegExp(`^${escaped}(?=\\s|$|[\\p{P}\\p{S}])`, "u");
+      if (pattern.test(out)) {
+        return out.replace(pattern, "").trimStart();
+      }
+    }
     return out;
   }
 
@@ -1713,12 +1756,12 @@
     if (!raw) return "";
     const normalizedColon = raw.replace(/：/g, ":");
     const parts = normalizedColon.match(
-      /^(?:(\d{1,2})\s*小时\s*)?(?:(\d{1,2})\s*分(?:钟)?\s*)?(\d{1,2})\s*秒(?:钟)?(.*)$/
+      /^(?:(\d{1,2})\s*小时\s*)?(?:(\d{1,2})\s*分(?:钟)?\s*)?(?:(\d{1,2})\s*秒(?:钟)?)?(.*)$/
     );
-    if (parts) {
+    if (parts && (parts[1] || parts[2] || parts[3])) {
       const hours = parts[1] ? parseInt(parts[1], 10) : 0;
       const minutes = parts[2] ? parseInt(parts[2], 10) : 0;
-      const seconds = parseInt(parts[3], 10);
+      const seconds = parts[3] ? parseInt(parts[3], 10) : 0;
       const suffix = parts[4] || "";
       return `${formatTimestamp(hours * 3600 + minutes * 60 + seconds)}${suffix}`;
     }
