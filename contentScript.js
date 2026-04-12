@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
   const SELECTORS = [
     '[data-testid="transcript-segment"]',
     '[data-testid="transcript-line"]',
@@ -2316,10 +2316,30 @@
       .spt-item[data-copy-state]:not([data-copy-state=""])::after {
         content: attr(data-copy-state);
         position: absolute;
-        top: -2px;
-        right: 0;
+        top: 2px;
+        right: 4px;
         font-size: 11px;
-        color: #0c713a;
+        font-weight: 600;
+        color: #059669;
+        background: #d1fae5;
+        padding: 4px 8px;
+        border-radius: 6px;
+        box-shadow: 0 2px 8px rgba(5, 150, 105, 0.15);
+        z-index: 10;
+        pointer-events: none;
+        animation: 
+          sptCopyBadgeIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards,
+          sptCopyBadgeOut 0.3s 0.9s ease-in forwards;
+      }
+
+      @keyframes sptCopyBadgeIn {
+        0% { opacity: 0; transform: scale(0.9) translateY(4px); }
+        100% { opacity: 1; transform: scale(1) translateY(0); }
+      }
+
+      @keyframes sptCopyBadgeOut {
+        0% { opacity: 1; transform: scale(1) translateY(0); }
+        100% { opacity: 0; transform: scale(0.9) translateY(-4px); }
       }
 
       /* 原文：调淡一点，作为辅助信息 */
