@@ -56,6 +56,7 @@
   const DEFAULT_CONFIG_RETRY_DELAY_MS = 15000;
   const PENDING_TRANSLATION_TEXT = "翻译中...";
   const MAX_TRANSCRIPT_TIME_DRIFT_SEC = 8;
+  const SEEK_RESET_THRESHOLD_SEC = 1.5;
   const YOUTUBE_VISIBLE_LINES = 2;
   const DEFAULT_PANEL_HEIGHT_VH = 70;
   const DEFAULT_PANEL_WIDTH_VW = 32;
@@ -91,6 +92,7 @@
   const hookedVideos = new WeakSet();
   const hookedTracks = new WeakSet();
   const hookedTimeVideos = new WeakSet();
+  const lastVideoTimeByVideo = new WeakMap();
   const EXT_INACTIVE_ERROR = "Extension inactive";
 
   const isYouTubeSite = () =>
@@ -426,15 +428,16 @@
           ? youtubeTranscriptState.anchorSeconds
           : null;
       const currentTime =
-        isFinite(panelAnchorTime ?? NaN)
-          ? panelAnchorTime
-          :
         hasTranscriptTime &&
         (!hasVideoTime ||
           Math.abs((transcriptTime ?? 0) - (videoTime ?? 0)) <=
             MAX_TRANSCRIPT_TIME_DRIFT_SEC)
           ? transcriptTime
-          : videoTime;
+          : hasVideoTime
+            ? videoTime
+            : isFinite(panelAnchorTime ?? NaN)
+              ? panelAnchorTime
+              : null;
       ensureSession(buildTranscriptSessionKey(video, segments));
       lastSegments = segments;
       if (!segments.length) {
@@ -602,6 +605,7 @@
     videos.forEach((video) => {
       if (hookedVideos.has(video)) return;
       hookedVideos.add(video);
+      lastVideoTimeByVideo.set(video, video?.currentTime);
 
       if (!hookedTimeVideos.has(video)) {
         hookedTimeVideos.add(video);
@@ -609,7 +613,23 @@
           if (!overlayEnabled) return;
           const t = video?.currentTime;
           if (!isFinite(t)) return;
+          lastVideoTimeByVideo.set(video, t);
           renderDueSegments(t, lastSegments);
+        });
+        video.addEventListener("seeking", () => {
+          if (!overlayEnabled || !isYouTubeSite()) return;
+          const t = video?.currentTime;
+          const lastTime = lastVideoTimeByVideo.get(video);
+          lastVideoTimeByVideo.set(video, t);
+          if (
+            isFinite(lastTime) &&
+            isFinite(t) &&
+            Math.abs(t - lastTime) < SEEK_RESET_THRESHOLD_SEC
+          ) {
+            return;
+          }
+          resetTranslationState();
+          youtubeTranscriptState.anchorSeconds = null;
         });
       }
 
@@ -957,7 +977,7 @@
     if (!text) return null;
     const timestamp = formatTimestamp(cue.startTime);
     const id = `${timestamp}|${text}`.slice(0, 240);
-    return { id, text, timestamp };
+    return { id, text, timestamp, seconds: cue.startTime };
   }
 
   function findCueIndex(cues, cue) {
@@ -1630,6 +1650,10 @@
     card.className = "spt-item";
     card.dataset.segmentId = segment.id;
     card.dataset.originalText = segment.text || "";
+    const orderValue = getSegmentOrderValue(segment);
+    if (orderValue != null) {
+      card.dataset.segmentOrder = String(orderValue);
+    }
     card.innerHTML = `
       <div class="spt-original"></div>
       <div class="spt-translation">${escapeHtml(
@@ -1686,9 +1710,48 @@
       }
       void copyOriginalText(card);
     });
-    listEl.prepend(card);
+    insertEntryCard(card, segment);
     entryMap.set(segment.id, card);
     trimList();
+  }
+
+  function getSegmentOrderValue(segment) {
+    if (!segment) return null;
+    if (isFinite(segment.seconds)) return Number(segment.seconds);
+    const parsed = parseTimestampToSeconds(segment.timestamp);
+    return isFinite(parsed) ? parsed : null;
+  }
+
+  function getCardOrderValue(card) {
+    if (!card) return null;
+    const raw = card.dataset.segmentOrder;
+    if (raw != null && raw !== "") {
+      const numeric = Number(raw);
+      if (isFinite(numeric)) return numeric;
+    }
+    const segmentId = card.dataset.segmentId || "";
+    const timestamp = segmentId.split("|")[0] || "";
+    const parsed = parseTimestampToSeconds(timestamp);
+    return isFinite(parsed) ? parsed : null;
+  }
+
+  function insertEntryCard(card, segment) {
+    if (!listEl) return;
+    const orderValue = getSegmentOrderValue(segment);
+    if (orderValue == null) {
+      listEl.prepend(card);
+      return;
+    }
+    const cards = Array.from(listEl.querySelectorAll(".spt-item"));
+    const insertBeforeCard = cards.find((existing) => {
+      const existingOrder = getCardOrderValue(existing);
+      return existingOrder != null && existingOrder < orderValue;
+    });
+    if (insertBeforeCard) {
+      listEl.insertBefore(card, insertBeforeCard);
+      return;
+    }
+    listEl.appendChild(card);
   }
 
   function ensureEntry(segment, statusText = "") {
