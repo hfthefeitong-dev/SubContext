@@ -46,7 +46,9 @@
   let activeSessionKey = "";
   let sessionVersion = 0;
   let activeTranslations = 0;
+  const activeRequestIds = new Set();
   let lastPrefetchedChunkId = -1;
+  let renderLowerBoundSeconds = null;
   const MAX_PARALLEL = 1; // 串行翻译，保证上下文按顺序传递
   const DEFAULT_BATCH_SIZE = 8;
   const DEFAULT_PREFETCH_AHEAD = 8;
@@ -55,9 +57,9 @@
   const DEFAULT_RETRY_DELAY_MS = 3000;
   const DEFAULT_CONFIG_RETRY_DELAY_MS = 15000;
   const PENDING_TRANSLATION_TEXT = "翻译中...";
-  const MAX_TRANSCRIPT_TIME_DRIFT_SEC = 8;
   const SEEK_RESET_THRESHOLD_SEC = 1.5;
-  const YOUTUBE_VISIBLE_LINES = 2;
+  const YOUTUBE_VISIBLE_LINES = 1;
+  const YOUTUBE_CONTEXT_BACK_LINES = 5;
   const DEFAULT_PANEL_HEIGHT_VH = 70;
   const DEFAULT_PANEL_WIDTH_VW = 32;
   const DEFAULT_FONT_ORIGINAL = 12;
@@ -184,6 +186,7 @@
     lastChunkTranslations = [];
     lastChunkLastTranslation = "";
     lastPrefetchedChunkId = -1;
+    renderLowerBoundSeconds = null;
     sessionVersion += 1;
     safeSendMessage({ type: "resetContext" }, { ok: false });
     hideCorrectionPopup();
@@ -192,6 +195,32 @@
       if (listEl) listEl.innerHTML = "";
       setStatus("");
     }
+  }
+
+  function resetDisplayForSeek(currentTime, { resetContext = false } = {}) {
+    const pending = translationQueue.splice(0, translationQueue.length);
+    pending.forEach((seg) => submittedIds.delete(seg.id));
+    activeRequestIds.forEach((id) => submittedIds.delete(id));
+    renderedIds.clear();
+    lastPrefetchedChunkId = -1;
+    renderLowerBoundSeconds = isFinite(currentTime)
+      ? Math.max(0, currentTime - 0.5)
+      : null;
+    sessionVersion += 1;
+    hideCorrectionPopup();
+    if (scheduleQueueProcessing.timer) {
+      clearTimeout(scheduleQueueProcessing.timer);
+      scheduleQueueProcessing.timer = null;
+    }
+    if (resetContext) {
+      lastChunkOriginal = [];
+      lastChunkTranslations = [];
+      lastChunkLastTranslation = "";
+      safeSendMessage({ type: "resetContext" }, { ok: false });
+    }
+    if (listEl) listEl.innerHTML = "";
+    entryMap.clear();
+    setStatus("");
   }
 
   function ensureSession(nextKey, options = {}) {
@@ -427,17 +456,13 @@
         isFinite(youtubeTranscriptState.anchorSeconds ?? NaN)
           ? youtubeTranscriptState.anchorSeconds
           : null;
-      const currentTime =
-        hasTranscriptTime &&
-        (!hasVideoTime ||
-          Math.abs((transcriptTime ?? 0) - (videoTime ?? 0)) <=
-            MAX_TRANSCRIPT_TIME_DRIFT_SEC)
+      const currentTime = hasVideoTime
+        ? videoTime
+        : hasTranscriptTime
           ? transcriptTime
-          : hasVideoTime
-            ? videoTime
-            : isFinite(panelAnchorTime ?? NaN)
-              ? panelAnchorTime
-              : null;
+          : isFinite(panelAnchorTime ?? NaN)
+            ? panelAnchorTime
+            : null;
       ensureSession(buildTranscriptSessionKey(video, segments));
       lastSegments = segments;
       if (!segments.length) {
@@ -452,15 +477,20 @@
       if (!isFinite(currentTime ?? NaN)) return;
 
       const chunkSize = Math.max(1, BATCH_SIZE); // 用户指定的若干行（为0时也按1处理当前行）
-      let currentIdx = segments.findIndex(
-        (s) => s.seconds != null && s.seconds >= (currentTime - 0.5)
-      );
-      if (currentIdx < 0) currentIdx = segments.length - 1;
+      let currentIdx = findCurrentSegmentIndex(segments, currentTime);
       const currentChunkId = Math.floor(currentIdx / chunkSize);
       const currentChunkStart = currentChunkId * chunkSize;
       const currentChunkEnd = currentChunkStart + chunkSize;
       const currentVisibleCount = Math.max(1, YOUTUBE_VISIBLE_LINES);
+      const contextBackStart = Math.max(
+        0,
+        currentIdx - YOUTUBE_CONTEXT_BACK_LINES
+      );
       const currentOffset = Math.max(0, currentIdx - currentChunkStart);
+      if (renderLowerBoundSeconds != null) {
+        renderLowerBoundSeconds =
+          segments[contextBackStart]?.seconds ?? Math.max(0, currentTime - 0.5);
+      }
 
       const currentChunk = segments.slice(
         currentChunkStart,
@@ -472,7 +502,7 @@
       );
       const currentLeadingChunk = segments.slice(
         currentChunkStart,
-        currentIdx
+        Math.min(currentIdx, Math.max(currentChunkStart, contextBackStart))
       );
       const currentTrailingChunk = segments.slice(
         Math.min(currentChunkEnd, currentIdx + currentVisibleCount),
@@ -493,6 +523,14 @@
         chunkId: currentChunkId,
         startOrder: currentOffset,
       });
+      enqueueIndexedSegmentRange(
+        segments,
+        contextBackStart,
+        currentIdx,
+        `${GROUP_DOM}-${currentChunkId}-backfill`,
+        true,
+        { renderPlaceholder: true, chunkSize }
+      );
       enqueueChunk(currentLeadingChunk, `${GROUP_DOM}-${currentChunkId}-leading`, false, {
         chunkId: currentChunkId,
         startOrder: 0,
@@ -595,6 +633,23 @@
     return h * 3600 + m * 60 + s;
   }
 
+  function findCurrentSegmentIndex(segments, currentTime) {
+    if (!Array.isArray(segments) || !segments.length) return 0;
+    if (!isFinite(currentTime ?? NaN)) return 0;
+    let currentIdx = 0;
+    const edge = currentTime + 0.1;
+    for (let i = 0; i < segments.length; i += 1) {
+      const seconds = segments[i]?.seconds;
+      if (!isFinite(seconds ?? NaN)) continue;
+      if (seconds <= edge) {
+        currentIdx = i;
+        continue;
+      }
+      break;
+    }
+    return currentIdx;
+  }
+
   function cleanText(str) {
     return (str || "").replace(/\s+/g, " ").trim();
   }
@@ -621,15 +676,20 @@
           const t = video?.currentTime;
           const lastTime = lastVideoTimeByVideo.get(video);
           lastVideoTimeByVideo.set(video, t);
+          const seekDelta = isFinite(lastTime) && isFinite(t)
+            ? Math.abs(t - lastTime)
+            : 0;
           if (
             isFinite(lastTime) &&
             isFinite(t) &&
-            Math.abs(t - lastTime) < SEEK_RESET_THRESHOLD_SEC
+            seekDelta < SEEK_RESET_THRESHOLD_SEC
           ) {
             return;
           }
-          resetTranslationState();
+          resetDisplayForSeek(t, { resetContext: seekDelta > 20 });
           youtubeTranscriptState.anchorSeconds = null;
+          renderDueSegments(t, lastSegments);
+          scheduleScan();
         });
       }
 
@@ -1015,6 +1075,35 @@
     if (!deferSchedule) scheduleQueueProcessing();
   }
 
+  function enqueueIndexedSegmentRange(
+    segments,
+    startIdx,
+    endIdx,
+    groupPrefix,
+    renderNow,
+    { renderPlaceholder = false, chunkSize = Math.max(1, BATCH_SIZE) } = {}
+  ) {
+    if (!Array.isArray(segments) || startIdx >= endIdx) return;
+    let idx = Math.max(0, startIdx);
+    const safeEnd = Math.min(segments.length, endIdx);
+    while (idx < safeEnd) {
+      const chunkId = Math.floor(idx / chunkSize);
+      const chunkStart = chunkId * chunkSize;
+      const sliceEnd = Math.min(safeEnd, chunkStart + chunkSize);
+      enqueueChunk(
+        segments.slice(idx, sliceEnd),
+        `${groupPrefix}-${chunkId}-${idx}`,
+        renderNow,
+        {
+          renderPlaceholder,
+          chunkId,
+          startOrder: idx - chunkStart,
+        }
+      );
+      idx = sliceEnd;
+    }
+  }
+
   function enqueueChunk(segments, groupId, renderNow, options = {}) {
     if (!segments?.length) return;
     const gid = groupId || `grp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1027,6 +1116,13 @@
       ensureChunkBuffer(chunkId, segments.length + startOrder);
     }
     segments.forEach((segment, idx) => {
+      if (renderNow && translationCache.has(segment.id)) {
+        renderedIds.add(segment.id);
+        const cached = translationCache.get(segment.id);
+        ensureEntry(segment, cached || placeholderText);
+        updateEntry(segment.id, cached || placeholderText, false, segment.text);
+        return;
+      }
       if (submittedIds.has(segment.id) || !canSubmitSegment(segment.id)) return;
       submittedIds.add(segment.id);
       if (renderNow) {
@@ -1315,10 +1411,14 @@
     if (!overlayEnabled) return;
     if (!isFinite(currentTime ?? NaN)) return;
     if (!Array.isArray(segments) || !segments.length) return;
+    const lowerBound = isFinite(renderLowerBoundSeconds ?? NaN)
+      ? renderLowerBoundSeconds
+      : null;
     const ready = segments
       .filter(
         (seg) =>
           seg.seconds != null &&
+          (lowerBound == null || seg.seconds >= lowerBound) &&
           seg.seconds <= currentTime + 0.05 &&
           !renderedIds.has(seg.id) &&
           translationCache.has(seg.id)
@@ -1381,6 +1481,7 @@
     if (!batch.length) return;
     const batchSessionVersion = batch[0]?.sessionVersion ?? sessionVersion;
     activeTranslations += 1;
+    batch.forEach((seg) => activeRequestIds.add(seg.id));
     translateBatch(batch)
       .catch((err) => {
         if (batchSessionVersion !== sessionVersion) return;
@@ -1394,6 +1495,7 @@
         });
       })
       .finally(() => {
+        batch.forEach((seg) => activeRequestIds.delete(seg.id));
         activeTranslations -= 1;
         processQueue();
       });
