@@ -10,6 +10,8 @@ const defaults = {
   smoothLines: 3,
   enableSourceCorrections: false,
   hideTranslationTimestamp: false,
+  limitDisplayLines: false,
+  displayLineLimit: 1,
   originalColorScheme: "dark",
   translationColorScheme: "dark",
 };
@@ -25,6 +27,8 @@ const prefetchAheadInput = document.getElementById("prefetchAhead");
 const smoothLinesInput = document.getElementById("smoothLines");
 const enableSourceCorrectionsInput = document.getElementById("enableSourceCorrections");
 const hideTranslationTimestampInput = document.getElementById("hideTranslationTimestamp");
+const limitDisplayLinesInput = document.getElementById("limitDisplayLines");
+const displayLineLimitInput = document.getElementById("displayLineLimit");
 const originalColorSelect = document.getElementById("originalColorScheme");
 const translationColorSelect = document.getElementById("translationColorScheme");
 const statusEl = document.getElementById("status");
@@ -65,6 +69,15 @@ async function init() {
     !!(stored.enableSourceCorrections ?? defaults.enableSourceCorrections);
   hideTranslationTimestampInput.checked =
     !!(stored.hideTranslationTimestamp ?? defaults.hideTranslationTimestamp);
+  limitDisplayLinesInput.checked =
+    !!(stored.limitDisplayLines ?? defaults.limitDisplayLines);
+  displayLineLimitInput.value = clampInt(
+    stored.displayLineLimit,
+    1,
+    3,
+    defaults.displayLineLimit
+  );
+  syncDisplayLineLimitControl();
   originalColorSelect.value = stored.originalColorScheme || defaults.originalColorScheme;
   translationColorSelect.value =
     stored.translationColorScheme || defaults.translationColorScheme;
@@ -82,6 +95,14 @@ prefetchAheadInput.addEventListener("input", () => {
 
 smoothLinesInput.addEventListener("input", () => {
   syncSegmentControls();
+});
+
+limitDisplayLinesInput.addEventListener("change", () => {
+  syncDisplayLineLimitControl();
+});
+
+displayLineLimitInput.addEventListener("input", () => {
+  syncDisplayLineLimitControl();
 });
 
 saveBtn.addEventListener("click", async () => {
@@ -108,6 +129,13 @@ saveBtn.addEventListener("click", async () => {
         );
   const enableSourceCorrections = !!enableSourceCorrectionsInput.checked;
   const hideTranslationTimestamp = !!hideTranslationTimestampInput.checked;
+  const limitDisplayLines = !!limitDisplayLinesInput.checked;
+  const displayLineLimit = clampInt(
+    displayLineLimitInput.value,
+    1,
+    3,
+    defaults.displayLineLimit
+  );
   const originalColorScheme = originalColorSelect.value === "green" ? "green" : "dark";
   const translationColorScheme =
     translationColorSelect.value === "green" ? "green" : "dark";
@@ -130,6 +158,8 @@ saveBtn.addEventListener("click", async () => {
     smoothLines,
     enableSourceCorrections,
     hideTranslationTimestamp,
+    limitDisplayLines,
+    displayLineLimit,
     originalColorScheme,
     translationColorScheme,
   });
@@ -169,6 +199,13 @@ function syncSegmentControls() {
   smoothLinesInput.disabled = false;
   smoothLinesInput.value = String(
     clampInt(smoothLinesInput.value, 0, prefetchAhead, defaults.smoothLines)
+  );
+}
+
+function syncDisplayLineLimitControl() {
+  displayLineLimitInput.disabled = !limitDisplayLinesInput.checked;
+  displayLineLimitInput.value = String(
+    clampInt(displayLineLimitInput.value, 1, 3, defaults.displayLineLimit)
   );
 }
 

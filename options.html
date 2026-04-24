@@ -264,6 +264,20 @@
           <div class="help">Spotify/YouTube 等站点译文行前的时间戳；原文不受影响。</div>
         </div>
 
+        <div class="form-group" style="display: grid; grid-template-columns: 1fr 120px; gap: 15px; align-items: end; margin-top: 12px;">
+          <div>
+            <div class="checkbox-label">
+              <input type="checkbox" id="limitDisplayLines" />
+              <span>仅显示最近 N 行字幕</span>
+            </div>
+            <div class="help">N 为 1 时仅显示当前字幕，N 为 2 时保留上一句，最多 3 行；关闭后恢复历史列表。</div>
+          </div>
+          <div>
+            <label for="displayLineLimit">N</label>
+            <input type="number" id="displayLineLimit" min="1" max="3" step="1" placeholder="1" />
+          </div>
+        </div>
+
         <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 12px;">
           <div>
             <label for="originalColorScheme">原文颜色</label>

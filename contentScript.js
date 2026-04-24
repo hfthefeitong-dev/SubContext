@@ -67,6 +67,8 @@
   const DEFAULT_ORIGINAL_COLOR_SCHEME = "dark";
   const DEFAULT_TRANSLATION_COLOR_SCHEME = "dark";
   const DEFAULT_HIDE_TRANSLATION_TIMESTAMP = false;
+  const DEFAULT_LIMIT_DISPLAY_LINES = false;
+  const DEFAULT_DISPLAY_LINE_LIMIT = 1;
   const DEFAULT_ENABLE_SOURCE_CORRECTIONS = false;
   const COLOR_MAP = {
     dark: {
@@ -89,6 +91,8 @@
   let ORIGINAL_COLOR_SCHEME = DEFAULT_ORIGINAL_COLOR_SCHEME;
   let TRANSLATION_COLOR_SCHEME = DEFAULT_TRANSLATION_COLOR_SCHEME;
   let HIDE_TRANSLATION_TIMESTAMP = DEFAULT_HIDE_TRANSLATION_TIMESTAMP;
+  let LIMIT_DISPLAY_LINES = DEFAULT_LIMIT_DISPLAY_LINES;
+  let DISPLAY_LINE_LIMIT = DEFAULT_DISPLAY_LINE_LIMIT;
   let ENABLE_SOURCE_CORRECTIONS = DEFAULT_ENABLE_SOURCE_CORRECTIONS;
   const STORAGE_KEY_POSITION = "sptPosition";
   const hookedVideos = new WeakSet();
@@ -734,6 +738,8 @@
         fontTranslation: DEFAULT_FONT_TRANSLATION,
         enableSourceCorrections: DEFAULT_ENABLE_SOURCE_CORRECTIONS,
         hideTranslationTimestamp: DEFAULT_HIDE_TRANSLATION_TIMESTAMP,
+        limitDisplayLines: DEFAULT_LIMIT_DISPLAY_LINES,
+        displayLineLimit: DEFAULT_DISPLAY_LINE_LIMIT,
         originalColorScheme: DEFAULT_ORIGINAL_COLOR_SCHEME,
         translationColorScheme: DEFAULT_TRANSLATION_COLOR_SCHEME,
       },
@@ -781,6 +787,13 @@
         );
         ENABLE_SOURCE_CORRECTIONS = !!res.enableSourceCorrections;
         HIDE_TRANSLATION_TIMESTAMP = !!res.hideTranslationTimestamp;
+        LIMIT_DISPLAY_LINES = !!res.limitDisplayLines;
+        DISPLAY_LINE_LIMIT = clampInt(
+          res.displayLineLimit,
+          1,
+          3,
+          DEFAULT_DISPLAY_LINE_LIMIT
+        );
         applyColorScheme(
           res.originalColorScheme || DEFAULT_ORIGINAL_COLOR_SCHEME,
           res.translationColorScheme || DEFAULT_TRANSLATION_COLOR_SCHEME
@@ -789,6 +802,7 @@
         overlay.style.maxHeight = `${PANEL_HEIGHT_VH}vh`;
         overlay.style.width = `${PANEL_WIDTH_VW}vw`;
         overlay.style.maxWidth = `${PANEL_WIDTH_VW}vw`;
+        applyDisplayLimitMode();
         applyFontSizes();
       }
     );
@@ -888,6 +902,21 @@
         const cached = translationCache.get(id) || translationEl.textContent || "";
         translationEl.textContent = formatTranslationForDisplay(cached, false);
       });
+    }
+    if (changes.limitDisplayLines) {
+      LIMIT_DISPLAY_LINES = !!changes.limitDisplayLines.newValue;
+      applyDisplayLimitMode();
+      trimList();
+    }
+    if (changes.displayLineLimit) {
+      DISPLAY_LINE_LIMIT = clampInt(
+        changes.displayLineLimit.newValue,
+        1,
+        3,
+        DEFAULT_DISPLAY_LINE_LIMIT
+      );
+      applyDisplayLimitMode();
+      trimList();
     }
     if (changes.originalColorScheme || changes.translationColorScheme) {
       const originalScheme =
@@ -1815,6 +1844,7 @@
     insertEntryCard(card, segment);
     entryMap.set(segment.id, card);
     trimList();
+    fitLimitedOverlayToViewport();
   }
 
   function getSegmentOrderValue(segment) {
@@ -1879,6 +1909,7 @@
       translationEl.style.color = "var(--spt-translation-color, #1f2937)";
       delete translationEl.dataset.error;
     }
+    fitLimitedOverlayToViewport();
   }
 
   function renderOriginalText(card, originalText) {
@@ -1956,14 +1987,99 @@
   function trimList() {
     if (!listEl) return;
     const cards = listEl.querySelectorAll(".spt-item");
-    const limit = 80;
+    const limit = getEntryListLimit();
     if (cards.length <= limit) return;
     for (let i = limit; i < cards.length; i += 1) {
       const card = cards[i];
       entryMap.delete(card.dataset.segmentId);
-       sourceCorrectionCache.delete(card.dataset.segmentId);
+      sourceCorrectionCache.delete(card.dataset.segmentId);
       card.remove();
     }
+    fitLimitedOverlayToViewport();
+  }
+
+  function getEntryListLimit() {
+    if (!LIMIT_DISPLAY_LINES) return 80;
+    return clampInt(DISPLAY_LINE_LIMIT, 1, 3, DEFAULT_DISPLAY_LINE_LIMIT);
+  }
+
+  function applyDisplayLimitMode() {
+    if (!overlay) return;
+    overlay.classList.toggle("spt-limit-display", !!LIMIT_DISPLAY_LINES);
+    if (LIMIT_DISPLAY_LINES) {
+      normalizeLimitedOverlayBox();
+      fitLimitedOverlayToViewport();
+      return;
+    }
+    overlay.style.height = "";
+    overlay.style.maxHeight = `${PANEL_HEIGHT_VH}vh`;
+  }
+
+  function normalizeLimitedOverlayBox() {
+    if (!overlay || !LIMIT_DISPLAY_LINES) return;
+    overlay.style.minHeight = "";
+    overlay.style.maxHeight = "";
+    if (overlay.style.top) {
+      overlay.style.bottom = "";
+    }
+  }
+
+  function fitLimitedOverlayToViewport() {
+    if (!overlay || !LIMIT_DISPLAY_LINES) return;
+    requestAnimationFrame(() => {
+      if (!overlay || !LIMIT_DISPLAY_LINES) return;
+      normalizeLimitedOverlayBox();
+      applyLimitedOverlayHeight();
+      const margin = 20;
+      const rect = overlay.getBoundingClientRect();
+
+      if (rect.bottom > window.innerHeight - margin) {
+        if (overlay.style.top) {
+          const nextTop = Math.max(margin, window.innerHeight - rect.height - margin);
+          overlay.style.top = `${nextTop}px`;
+          overlay.style.bottom = "";
+        } else {
+          overlay.style.bottom = `${margin}px`;
+        }
+      }
+
+      const updated = overlay.getBoundingClientRect();
+      if (updated.top < margin && updated.height < window.innerHeight - margin * 2) {
+        overlay.style.top = `${margin}px`;
+        overlay.style.bottom = "";
+      }
+    });
+  }
+
+  function applyLimitedOverlayHeight() {
+    if (!overlay || !listEl || !LIMIT_DISPLAY_LINES) return;
+    const header = overlay.querySelector(".spt-header");
+    const status = overlay.querySelector(".spt-status");
+    const listStyle = window.getComputedStyle(listEl);
+    const overlayStyle = window.getComputedStyle(overlay);
+    const paddingTop = parseFloat(listStyle.paddingTop) || 0;
+    const paddingBottom = parseFloat(listStyle.paddingBottom) || 0;
+    const gap = parseFloat(listStyle.rowGap || listStyle.gap) || 0;
+    const borderTop = parseFloat(overlayStyle.borderTopWidth) || 0;
+    const borderBottom = parseFloat(overlayStyle.borderBottomWidth) || 0;
+    const cards = Array.from(listEl.querySelectorAll(".spt-item"));
+    const cardsHeight = cards.reduce(
+      (sum, card) => sum + card.getBoundingClientRect().height,
+      0
+    );
+    const listHeight =
+      paddingTop + paddingBottom + cardsHeight + Math.max(0, cards.length - 1) * gap;
+    const statusHeight =
+      status && status.style.display !== "none"
+        ? status.getBoundingClientRect().height
+        : 0;
+    const total =
+      (header?.getBoundingClientRect().height || 0) +
+      statusHeight +
+      listHeight +
+      borderTop +
+      borderBottom;
+    overlay.style.height = `${Math.ceil(total)}px`;
   }
 
   function mergeTimestamp(timestamp, line) {
@@ -2454,6 +2570,37 @@
         border-radius: 4px;
       }
 
+      .spt-overlay.spt-limit-display {
+        max-height: none !important;
+      }
+
+      .spt-overlay.spt-limit-display .spt-items {
+        overflow: visible;
+        flex: 0 0 auto;
+        scrollbar-width: none;
+      }
+
+      .spt-overlay.spt-limit-display .spt-item {
+        box-sizing: border-box;
+      }
+
+      .spt-overlay.spt-limit-display .spt-original,
+      .spt-overlay.spt-limit-display .spt-translation {
+        overflow-wrap: anywhere;
+      }
+
+      .spt-overlay.spt-limit-display .spt-items::-webkit-scrollbar {
+        display: none;
+      }
+
+      .spt-overlay.spt-limit-display .spt-scroll-latest {
+        display: none;
+      }
+
+      .spt-overlay.spt-limit-display .spt-resize {
+        display: none;
+      }
+
       /* 单条字幕：去掉边框，纯净风格 */
       .spt-item {
         border: none;
@@ -2746,6 +2893,7 @@
       container.style.right = "";
       container.style.bottom = "";
       container.style.position = "fixed";
+      fitLimitedOverlayToViewport();
     });
   }
 
