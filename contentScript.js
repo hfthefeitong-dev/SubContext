@@ -99,6 +99,7 @@
   const hookedTracks = new WeakSet();
   const hookedTimeVideos = new WeakSet();
   const lastVideoTimeByVideo = new WeakMap();
+  const spotifyCueRefreshTimers = new WeakMap();
   const EXT_INACTIVE_ERROR = "Extension inactive";
 
   const isYouTubeSite = () =>
@@ -674,10 +675,12 @@
           const t = video?.currentTime;
           if (!isFinite(t)) return;
           lastVideoTimeByVideo.set(video, t);
-          renderDueSegments(t, lastSegments);
+          if (isYouTubeSite()) {
+            renderDueSegments(t, lastSegments);
+          }
         });
         video.addEventListener("seeking", () => {
-          if (!overlayEnabled || !isYouTubeSite()) return;
+          if (!overlayEnabled || (!isYouTubeSite() && !isSpotifySite())) return;
           const t = video?.currentTime;
           const lastTime = lastVideoTimeByVideo.get(video);
           lastVideoTimeByVideo.set(video, t);
@@ -685,6 +688,7 @@
             ? Math.abs(t - lastTime)
             : 0;
           if (
+            isYouTubeSite() &&
             isFinite(lastTime) &&
             isFinite(t) &&
             seekDelta < SEEK_RESET_THRESHOLD_SEC
@@ -692,9 +696,21 @@
             return;
           }
           resetDisplayForSeek(t, { resetContext: seekDelta > 20 });
-          youtubeTranscriptState.anchorSeconds = null;
-          renderDueSegments(t, lastSegments);
+          if (isYouTubeSite()) {
+            youtubeTranscriptState.anchorSeconds = null;
+          }
+          if (isYouTubeSite()) {
+            renderDueSegments(t, lastSegments);
+          }
           scheduleScan();
+        });
+        video.addEventListener("seeked", () => {
+          if (!overlayEnabled || !isSpotifySite()) return;
+          const t = video?.currentTime;
+          if (isFinite(t)) {
+            lastVideoTimeByVideo.set(video, t);
+          }
+          scheduleSpotifyCueRefresh(video, 60);
         });
       }
 
@@ -936,16 +952,22 @@
       ensureSession(buildTrackSessionKey(track, videoRef, allCues));
     }
     const activeIds = new Set();
+    const currentActiveCues = [];
+    const videoTime = videoRef?.currentTime;
+    const validateCueTime = isSpotifySite() && isFinite(videoTime ?? NaN);
 
     // translate active cues immediately
     for (let i = 0; i < activeCues.length; i += 1) {
-      const seg = cueToSegment(activeCues[i]);
+      const cue = activeCues[i];
+      if (validateCueTime && !isCueActiveAtTime(cue, videoTime)) continue;
+      currentActiveCues.push(cue);
+      const seg = cueToSegment(cue);
       if (seg?.id) activeIds.add(seg.id);
     }
 
     // prefetch next segment (user-defined number of lines) to keep exactly one segment cached
-    if (allCues.length && activeCues.length) {
-      const firstActive = activeCues[0];
+    if (allCues.length && currentActiveCues.length) {
+      const firstActive = currentActiveCues[0];
       const idx = findCueIndex(allCues, firstActive);
       if (idx >= 0) {
         if (idx === 0) {
@@ -1035,6 +1057,29 @@
       }
     }
     scheduleQueueProcessing();
+  }
+
+  function scheduleSpotifyCueRefresh(video, delayMs = 0) {
+    const existing = spotifyCueRefreshTimers.get(video);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      spotifyCueRefreshTimers.delete(video);
+      if (!overlayEnabled || !isSpotifySite()) return;
+      const tracks = video?.textTracks || [];
+      for (let i = 0; i < tracks.length; i += 1) {
+        handleCueChange(tracks[i], video);
+      }
+    }, Math.max(0, delayMs));
+    spotifyCueRefreshTimers.set(video, timer);
+  }
+
+  function isCueActiveAtTime(cue, currentTime) {
+    if (!cue || !isFinite(currentTime ?? NaN)) return false;
+    const start = Number(cue.startTime);
+    const end = Number(cue.endTime);
+    const startsNow = !isFinite(start) || start <= currentTime + 0.05;
+    const notEnded = !isFinite(end) || end >= currentTime - 0.05;
+    return startsNow && notEnded;
   }
 
   function enqueueCue(cue, { prefetch = false } = {}) {
