@@ -577,7 +577,8 @@
         if (segment.seconds < videoTime - pastWindow) return;
         if (segment.seconds > videoTime + futureWindow) return;
       }
-      if (renderedIds.has(segment.id) || submittedIds.has(segment.id)) return;
+      if (renderedIds.has(segment.id) || isTranslationRequestSatisfied(segment.id))
+        return;
       renderedIds.add(segment.id);
       ensureEntry(
         segment,
@@ -978,7 +979,7 @@
               updateEntry(seg.id, cached, false, seg.text);
             }
           }
-          if (submittedIds.has(seg.id)) continue;
+          if (isTranslationRequestSatisfied(seg.id)) continue;
           enqueueTranslation(
             { ...seg, chunkId: currentChunkId, chunkOrder: j - start },
             {
@@ -996,7 +997,7 @@
           ensureChunkBuffer(nextChunkId, end - start);
           for (let j = start; j < end; j += 1) {
             const seg = cueToSegment(allCues[j]);
-            if (!seg || submittedIds.has(seg.id)) continue;
+            if (!seg || isTranslationRequestSatisfied(seg.id)) continue;
             enqueueTranslation(
               { ...seg, chunkId: nextChunkId, chunkOrder: j - start },
               {
@@ -1018,7 +1019,7 @@
           ensureChunkBuffer(secondNextChunkId, end - start);
           for (let j = start; j < end; j += 1) {
             const seg = cueToSegment(allCues[j]);
-            if (!seg || submittedIds.has(seg.id)) continue;
+            if (!seg || isTranslationRequestSatisfied(seg.id)) continue;
             enqueueTranslation(
               { ...seg, chunkId: secondNextChunkId, chunkOrder: j - start },
               {
@@ -1044,19 +1045,19 @@
     const id = `${timestamp}|${text}`.slice(0, 240);
     const segment = { id, text, timestamp };
     if (prefetch) {
-      if (submittedIds.has(id)) return;
+      if (isTranslationRequestSatisfied(id)) return;
       enqueueTranslation(segment, { prefetch: true, render: false });
       return;
     }
     if (renderedIds.has(id)) return;
     renderedIds.add(id);
 
-    if (translationCache.has(id)) {
+    if (hasUsableCachedTranslation(id)) {
       ensureEntry(segment, translationCache.get(id));
       return;
     }
 
-    ensureEntry(segment, "");
+    ensureEntry(segment, translationCache.get(id) || "");
     enqueueTranslation(segment, { prefetch: false, render: true });
   }
 
@@ -1088,11 +1089,34 @@
       : `${pad(m)}:${pad(sec)}`;
   }
 
+  function needsSourceCorrectionCache(id) {
+    return (
+      ENABLE_SOURCE_CORRECTIONS &&
+      translationCache.has(id) &&
+      !sourceCorrectionCache.has(id)
+    );
+  }
+
+  function hasUsableCachedTranslation(id) {
+    return (
+      translationCache.has(id) &&
+      (!ENABLE_SOURCE_CORRECTIONS || sourceCorrectionCache.has(id))
+    );
+  }
+
+  function isTranslationRequestSatisfied(id) {
+    if (activeRequestIds.has(id)) return true;
+    if (translationQueue.some((item) => item.id === id)) return true;
+    if (!submittedIds.has(id)) return false;
+    return !needsSourceCorrectionCache(id);
+  }
+
   function enqueueTranslation(
     segment,
     { prefetch = false, render = true, groupId, deferSchedule = false } = {}
   ) {
-    if (submittedIds.has(segment.id) || !canSubmitSegment(segment.id)) return;
+    if (isTranslationRequestSatisfied(segment.id) || !canSubmitSegment(segment.id))
+      return;
     submittedIds.add(segment.id);
     translationQueue.push({
       ...segment,
@@ -1145,18 +1169,23 @@
       ensureChunkBuffer(chunkId, segments.length + startOrder);
     }
     segments.forEach((segment, idx) => {
-      if (renderNow && translationCache.has(segment.id)) {
+      const cached = translationCache.get(segment.id);
+      if (renderNow && hasUsableCachedTranslation(segment.id)) {
         renderedIds.add(segment.id);
-        const cached = translationCache.get(segment.id);
         ensureEntry(segment, cached || placeholderText);
         updateEntry(segment.id, cached || placeholderText, false, segment.text);
         return;
       }
-      if (submittedIds.has(segment.id) || !canSubmitSegment(segment.id)) return;
-      submittedIds.add(segment.id);
-      if (renderNow) {
+      if (renderNow && cached) {
         renderedIds.add(segment.id);
-        const cached = translationCache.get(segment.id);
+        ensureEntry(segment, cached || placeholderText);
+        updateEntry(segment.id, cached, false, segment.text);
+      }
+      if (isTranslationRequestSatisfied(segment.id) || !canSubmitSegment(segment.id))
+        return;
+      submittedIds.add(segment.id);
+      if (renderNow && !cached) {
+        renderedIds.add(segment.id);
         ensureEntry(segment, cached || placeholderText);
         if (cached) {
           updateEntry(segment.id, cached, false, segment.text);
@@ -1450,7 +1479,7 @@
           (lowerBound == null || seg.seconds >= lowerBound) &&
           seg.seconds <= currentTime + 0.05 &&
           !renderedIds.has(seg.id) &&
-          translationCache.has(seg.id)
+          hasUsableCachedTranslation(seg.id)
       )
       .sort((a, b) => (a.seconds ?? 0) - (b.seconds ?? 0));
 
@@ -1992,7 +2021,6 @@
     for (let i = limit; i < cards.length; i += 1) {
       const card = cards[i];
       entryMap.delete(card.dataset.segmentId);
-      sourceCorrectionCache.delete(card.dataset.segmentId);
       card.remove();
     }
     fitLimitedOverlayToViewport();
