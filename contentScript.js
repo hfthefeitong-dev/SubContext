@@ -70,6 +70,15 @@
   const DEFAULT_LIMIT_DISPLAY_LINES = false;
   const DEFAULT_DISPLAY_LINE_LIMIT = 1;
   const DEFAULT_ENABLE_SOURCE_CORRECTIONS = false;
+  const COLON_TIMESTAMP_SOURCE = "(?:\\d{1,2}:)?\\d{1,2}:\\d{2}";
+  const TIMESTAMP_SPACE_SOURCE = "[\\s\\u00a0\\u200b\\u200c\\u200d\\ufeff]*";
+  const LOCALIZED_TIMESTAMP_SOURCE =
+    `(?:(?:\\d{1,2})${TIMESTAMP_SPACE_SOURCE}小时${TIMESTAMP_SPACE_SOURCE})?(?:(?:\\d{1,2})${TIMESTAMP_SPACE_SOURCE}分(?:${TIMESTAMP_SPACE_SOURCE}钟)?${TIMESTAMP_SPACE_SOURCE})?(?:\\d{1,2})${TIMESTAMP_SPACE_SOURCE}秒(?:${TIMESTAMP_SPACE_SOURCE}钟)?|(?:(?:\\d{1,2})${TIMESTAMP_SPACE_SOURCE}小时${TIMESTAMP_SPACE_SOURCE})?(?:\\d{1,2})${TIMESTAMP_SPACE_SOURCE}分(?:${TIMESTAMP_SPACE_SOURCE}钟)?|(?:\\d{1,2})${TIMESTAMP_SPACE_SOURCE}小时`;
+  const TIMESTAMP_SOURCE = `(?:${COLON_TIMESTAMP_SOURCE}|${LOCALIZED_TIMESTAMP_SOURCE})`;
+  const LEADING_TIMESTAMP_PREFIX_RE = new RegExp(
+    `^(${TIMESTAMP_SOURCE})(?:${TIMESTAMP_SPACE_SOURCE}[-|]${TIMESTAMP_SPACE_SOURCE}|${TIMESTAMP_SPACE_SOURCE})`
+  );
+  const TIMESTAMP_ONLY_RE = new RegExp(`^(${TIMESTAMP_SOURCE})$`);
   const COLOR_MAP = {
     dark: {
       original: "#0f172a",
@@ -389,17 +398,16 @@
   }
 
   function extractLeadingTimestamp(rawText) {
-    const normalized = cleanText(rawText);
-    if (!normalized) return { timestamp: "", text: "" };
-    const match = normalized.match(
-      /^((?:\d{1,2}:)?\d{1,2}:\d{2})(?:\s+|\s*[-|]\s*)(.+)$/
-    );
+    const cleaned = cleanText(rawText);
+    const normalized = cleaned.replace(/：/g, ":");
+    if (!cleaned) return { timestamp: "", text: "" };
+    const match = normalized.match(LEADING_TIMESTAMP_PREFIX_RE);
     if (!match) {
-      return { timestamp: "", text: normalized };
+      return { timestamp: "", text: cleaned };
     }
     return {
       timestamp: cleanText(match[1] || ""),
-      text: cleanText(match[2] || ""),
+      text: cleanText(cleaned.slice(match[0].length)),
     };
   }
 
@@ -1334,7 +1342,7 @@
     const nodes = Array.from(panel.querySelectorAll("*"))
       .filter((node) => {
         const text = cleanText(node.textContent || "");
-        return /^(\d{1,2}:)?\d{1,2}:\d{2}$/.test(text) && isNodeVisible(node);
+        return TIMESTAMP_ONLY_RE.test(text.replace(/：/g, ":")) && isNodeVisible(node);
       })
       .sort((a, b) => {
         const ar = a.getBoundingClientRect();
@@ -1403,7 +1411,8 @@
     };
 
     for (const line of lines) {
-      const timestampOnly = line.match(/^((?:\d{1,2}:)?\d{1,2}:\d{2})$/);
+      const normalizedLine = line.replace(/：/g, ":");
+      const timestampOnly = normalizedLine.match(TIMESTAMP_ONLY_RE);
       if (timestampOnly) {
         flush();
         current = {
@@ -1412,12 +1421,12 @@
         };
         continue;
       }
-      const matched = line.match(/^((?:\d{1,2}:)?\d{1,2}:\d{2})\s+(.+)$/);
+      const matched = normalizedLine.match(LEADING_TIMESTAMP_PREFIX_RE);
       if (matched) {
         flush();
         current = {
           timestamp: matched[1],
-          parts: [matched[2]],
+          parts: [cleanText(line.slice(matched[0].length))],
         };
         continue;
       }
@@ -1735,7 +1744,6 @@
       type: "translate",
       segments: batch.map((seg) => ({
         text: seg.text,
-        timestamp: seg.timestamp,
       })),
       context: {
         prevOriginal: lastChunkOriginal,

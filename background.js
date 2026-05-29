@@ -7,6 +7,14 @@ const DEFAULT_GEMINI_THINKING_LEVEL = "high";
 const DEFAULT_REQUEST_TIMEOUT_MS = 45000;
 const DEFAULT_REQUEST_MAX_RETRIES = 1;
 const DEFAULT_REQUEST_RETRY_DELAY_MS = 1200;
+const COLON_TIMESTAMP_SOURCE = "(?:\\d{1,2}:)?\\d{1,2}:\\d{2}";
+const TIMESTAMP_SPACE_SOURCE = "[\\s\\u00a0\\u200b\\u200c\\u200d\\ufeff]*";
+const LOCALIZED_TIMESTAMP_SOURCE =
+  `(?:(?:\\d{1,2})${TIMESTAMP_SPACE_SOURCE}小时${TIMESTAMP_SPACE_SOURCE})?(?:(?:\\d{1,2})${TIMESTAMP_SPACE_SOURCE}分(?:${TIMESTAMP_SPACE_SOURCE}钟)?${TIMESTAMP_SPACE_SOURCE})?(?:\\d{1,2})${TIMESTAMP_SPACE_SOURCE}秒(?:${TIMESTAMP_SPACE_SOURCE}钟)?|(?:(?:\\d{1,2})${TIMESTAMP_SPACE_SOURCE}小时${TIMESTAMP_SPACE_SOURCE})?(?:\\d{1,2})${TIMESTAMP_SPACE_SOURCE}分(?:${TIMESTAMP_SPACE_SOURCE}钟)?|(?:\\d{1,2})${TIMESTAMP_SPACE_SOURCE}小时`;
+const TIMESTAMP_PREFIX_RE = new RegExp(
+  `^(?:${COLON_TIMESTAMP_SOURCE}|${LOCALIZED_TIMESTAMP_SOURCE})(?:${TIMESTAMP_SPACE_SOURCE}[-|]${TIMESTAMP_SPACE_SOURCE}|${TIMESTAMP_SPACE_SOURCE})?`
+);
+const LEADING_NUMBER_RE = /^\s*\d+\s*[\.\):\-]\s*/;
 
 const recentSegments = [];
 const recentTranslations = [];
@@ -196,14 +204,13 @@ async function translateBatch(segments = [], context = {}) {
 
   const normalized = segments
     .map((s) => ({
-      text: (s?.text || "").trim(),
-      timestamp: (s?.timestamp || "").trim(),
+      text: sanitizeSubtitleTextForApi(s?.text || ""),
     }))
     .filter((s) => s.text);
 
   if (!normalized.length) throw new Error("Segments are empty.");
 
-  const currentLines = normalized.map((s) => s.text);
+  const currentLines = normalized.map((s) => sanitizeSubtitleTextForApi(s.text));
 
   const contextMessages = buildContextMessages(config.contextLines, {
     prevOriginal: context?.prevOriginal,
@@ -692,13 +699,22 @@ function stripTimestamps(text) {
   // remove leading timestamp-like patterns and numbering
   return text
     .split(/\r?\n/)
-    .map((line) =>
-      line
-        .trim()
-        .replace(/^\d+\s*[\.\):\-]\s*/, "")
-        .replace(/^(\d{1,2}:)?\d{1,2}:\d{2}\s*/, "")
-    )
+    .map((line) => {
+      const withoutNumber = line.trim().replace(LEADING_NUMBER_RE, "");
+      return stripTimestampPrefix(withoutNumber);
+    })
     .join("\n");
+}
+
+function sanitizeSubtitleTextForApi(text) {
+  return stripTimestamps(text).trim();
+}
+
+function stripTimestampPrefix(line) {
+  const raw = String(line || "");
+  const normalized = raw.replace(/：/g, ":");
+  const match = normalized.match(TIMESTAMP_PREFIX_RE);
+  return match ? raw.slice(match[0].length).trimStart() : raw;
 }
 
 function ensureApiKeyForModel(config = {}) {
