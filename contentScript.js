@@ -724,6 +724,7 @@
 
       const registerTrack = (track) => {
         if (!track || hookedTracks.has(track)) return;
+        if (!isTranslatableTextTrack(track)) return;
         hookedTracks.add(track);
         track.mode = "hidden"; // allow JS access
         track.addEventListener("cuechange", () => handleCueChange(track, video));
@@ -749,6 +750,17 @@
         });
       }
     });
+  }
+
+  function isTranslatableTextTrack(track) {
+    const kind = String(track?.kind || "").toLowerCase();
+    if (kind === "chapters" || kind === "metadata") return false;
+    if (kind && !["subtitles", "captions", "descriptions"].includes(kind)) {
+      return false;
+    }
+    const label = cleanText(track?.label || "");
+    if (/章节|chapter|chapters|kapitel|chapitre/i.test(label)) return false;
+    return true;
   }
 
   function loadRuntimeConfig() {
@@ -954,6 +966,7 @@
 
   function handleCueChange(track, videoRef = getPrimaryVideo()) {
     if (!overlayEnabled) return;
+    if (!isTranslatableTextTrack(track)) return;
     const activeCues = track?.activeCues || [];
     const allCues = track?.cues || [];
     if (allCues.length) {
@@ -1310,8 +1323,10 @@
           score: scoreYouTubePanel(panel, text, segments),
         };
       })
-      .filter(({ text, segments, score }) => {
+      .filter(({ panel, text, segments, score }) => {
         return (
+          isLikelyYouTubeTranscriptPanel(panel, text) &&
+          !isLikelyYouTubeChapterPanel(panel, text) &&
           /(?:\d{1,2}:)?\d{1,2}:\d{2}/.test(text) &&
           segments.length >= 3 &&
           score > -50
@@ -1335,6 +1350,60 @@
       }
     }
     return { panel: null, segments: [], anchorSeconds: null };
+  }
+
+  function isLikelyYouTubeTranscriptPanel(panel, text = "") {
+    if (!panel?.querySelector) return false;
+    if (
+      panel.querySelector(
+        [
+          "ytd-transcript-segment-renderer",
+          "ytd-transcript-body-renderer",
+          "ytd-transcript-search-panel-renderer",
+          '[id="segments-container"]',
+          '[id="segment-text"]',
+          '[id="segment-timestamp"]',
+        ].join(", ")
+      )
+    ) {
+      return true;
+    }
+    if (
+      panel.querySelector?.(
+        'input[placeholder*="转写"], input[placeholder*="transcript" i]'
+      )
+    ) {
+      return true;
+    }
+    const activeText = cleanText(
+      panel.querySelector(
+        'button[aria-selected="true"], yt-chip-cloud-chip-renderer[aria-selected="true"]'
+      )?.innerText || ""
+    );
+    if (/转写|Transcript|Transkript/i.test(activeText)) return true;
+    return /搜索转写内容|Search transcript|Transcript search/i.test(text);
+  }
+
+  function isLikelyYouTubeChapterPanel(panel, text = "") {
+    if (!panel?.querySelector) return false;
+    if (
+      panel.querySelector(
+        [
+          "ytd-macro-markers-list-renderer",
+          "ytd-macro-markers-list-item-renderer",
+          '[id="contents"][class*="macro"]',
+        ].join(", ")
+      )
+    ) {
+      return true;
+    }
+    const activeText = cleanText(
+      panel.querySelector(
+        'button[aria-selected="true"], yt-chip-cloud-chip-renderer[aria-selected="true"]'
+      )?.innerText || ""
+    );
+    if (/章节|Chapter/i.test(activeText)) return true;
+    return /章节|Chapters/i.test(text) && !/转写|Transcript|Transkript/i.test(text);
   }
 
   function getVisibleTranscriptAnchorSeconds(panel) {
