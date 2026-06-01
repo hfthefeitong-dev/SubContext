@@ -10,7 +10,6 @@
     'ytd-transcript-segment-renderer',
     'ytd-transcript-segment-renderer #segment-text',
   ];
-
   const __SPT_GUARD_KEY__ = "__spt_subtitle_context_translator__";
   try {
     if (typeof window !== "undefined") {
@@ -38,6 +37,12 @@
     segments: [],
     anchorSeconds: null,
     panel: null,
+  };
+  const zdfSubtitleState = {
+    mediaKey: "",
+    tracksKey: "",
+    loadingPromise: null,
+    segments: [],
   };
   let lastSegments = []; // cache of latest transcript segments (ordered)
   let lastChunkOriginal = []; // 上一段原文行
@@ -118,6 +123,10 @@
   const isSpotifySite = () =>
     typeof location !== "undefined" &&
     location.hostname.includes("open.spotify.com");
+
+  const isZdfSite = () =>
+    typeof location !== "undefined" &&
+    /(^|\.)zdf\.de$/i.test(location.hostname || "");
 
   function isExtensionAlive() {
     return typeof chrome !== "undefined" && !!chrome.runtime?.id;
@@ -276,6 +285,17 @@
     ].join("||");
   }
 
+  function buildZdfSubtitleSessionKey(video, segments = []) {
+    const first = segments[0];
+    return [
+      "zdf-subtitle",
+      buildMediaBaseKey(video),
+      getZdfContentIdFromLocation(),
+      first?.id || "",
+      first?.seconds ?? "",
+    ].join("||");
+  }
+
   function setStableChunkContext(originalLines = [], translatedLines = []) {
     lastChunkOriginal = (originalLines || []).filter(Boolean).slice(-3);
     lastChunkTranslations = (translatedLines || []).filter(Boolean).slice(-3);
@@ -284,7 +304,7 @@
   }
 
   function isAnyVideoPlaying() {
-    const videos = document.querySelectorAll("video");
+    const videos = getAllVideos();
     if (!videos.length) return true; // if no video found, keep scanning
     for (let i = 0; i < videos.length; i += 1) {
       const v = videos[i];
@@ -393,8 +413,12 @@
   }
 
   function getPrimaryVideo() {
-    const videos = document.querySelectorAll("video");
+    const videos = getAllVideos();
     return videos.length ? videos[0] : null;
+  }
+
+  function getAllVideos() {
+    return collectDeepSelectorMatches(["video"]);
   }
 
   function extractLeadingTimestamp(rawText) {
@@ -478,9 +502,9 @@
             : null;
       ensureSession(buildTranscriptSessionKey(video, segments));
       lastSegments = segments;
-      if (!segments.length) {
-        setStatus(
-          isYouTubeLiveContent()
+    if (!segments.length) {
+      setStatus(
+        isYouTubeLiveContent()
             ? "未能从这个 YouTube 直播/回放页面解析到转写内容。请确认右侧“转写文稿”已展开；若仍无结果，可能是该视频当前不提供可抓取的字幕数据。"
             : "请打开 YouTube 的“转写”面板以获取字幕。"
         );
@@ -571,6 +595,21 @@
     // Spotify：禁用 DOM transcript 扫描，完全依赖 textTracks(cuechange) 以避免重复翻译
     if (isSpotifySite()) return;
 
+    if (isZdfSite()) {
+      const currentTime = isFinite(videoTime ?? NaN) ? videoTime : null;
+      const segments = await collectZdfSubtitleSegments(video);
+      if (segments.length && currentTime != null) {
+        ensureSession(buildZdfSubtitleSessionKey(video, segments));
+        lastSegments = segments;
+        setStatus("");
+        enqueueTimedSubtitleSegments(segments, currentTime, "zdf-sub");
+        renderDueSegments(currentTime, segments);
+        return;
+      }
+      setStatus("未能读取 ZDF 完整字幕源。请确认该视频字幕轨道可用，或稍后重试。");
+      return;
+    }
+
     // 其他站点：按时间窗口过滤，逐行翻译
     const pastWindow = 2;
     const futureWindow = 6;
@@ -595,6 +634,49 @@
       );
       enqueueTranslation(segment, { prefetch: false, render: true });
     });
+  }
+
+  function collectDeepSelectorMatches(selectors) {
+    const found = new Set();
+    const roots = [document];
+    for (let i = 0; i < roots.length; i += 1) {
+      const root = roots[i];
+      selectors.forEach((selector) => {
+        try {
+          root.querySelectorAll?.(selector).forEach((node) => found.add(node));
+        } catch (_) {
+          // ignore unsupported selectors
+        }
+      });
+      root.querySelectorAll?.("*").forEach((node) => {
+        if (node.shadowRoot) roots.push(node.shadowRoot);
+      });
+    }
+    return Array.from(found);
+  }
+
+  function normalizeSubtitleCueText(text) {
+    return cleanText(text)
+      .replace(/\s+([,.;:!?])/g, "$1")
+      .replace(/([([{])\s+/g, "$1")
+      .replace(/\s+([)\]}])/g, "$1");
+  }
+
+  function isLikelySubtitleText(text) {
+    const value = cleanText(text);
+    if (!value || value.length < 2 || value.length > 260) return false;
+    if (!/[A-Za-zÄÖÜäöüßÀ-ÿ]/.test(value)) return false;
+    if (/字幕上下文翻译|翻译中|翻译失败|Weitere Empfehlungen|Nächste Folge/i.test(value)) {
+      return false;
+    }
+    if (
+      /^(A-|A\+|×|设置|关闭|Pause|Play|Abspielen|Lautstärke|Untertitel|Einstellungen|Vollbild)$/i.test(
+        value
+      )
+    ) {
+      return false;
+    }
+    return true;
   }
 
   function extractSegment(node) {
@@ -670,7 +752,7 @@
 
   function hookVideoTracks() {
     if (!overlayEnabled) return;
-    const videos = document.querySelectorAll("video");
+    const videos = getAllVideos();
     videos.forEach((video) => {
       if (hookedVideos.has(video)) return;
       hookedVideos.add(video);
@@ -686,9 +768,12 @@
           if (isYouTubeSite()) {
             renderDueSegments(t, lastSegments);
           }
+          if (isZdfSite()) {
+            handleZdfTimedPlayback(video, t);
+          }
         });
         video.addEventListener("seeking", () => {
-          if (!overlayEnabled || (!isYouTubeSite() && !isSpotifySite())) return;
+          if (!overlayEnabled || (!isYouTubeSite() && !isSpotifySite() && !isZdfSite())) return;
           const t = video?.currentTime;
           const lastTime = lastVideoTimeByVideo.get(video);
           lastVideoTimeByVideo.set(video, t);
@@ -707,13 +792,13 @@
           if (isYouTubeSite()) {
             youtubeTranscriptState.anchorSeconds = null;
           }
-          if (isYouTubeSite()) {
+          if (isYouTubeSite() || isZdfSite()) {
             renderDueSegments(t, lastSegments);
           }
           scheduleScan();
         });
         video.addEventListener("seeked", () => {
-          if (!overlayEnabled || !isSpotifySite()) return;
+          if (!overlayEnabled || (!isSpotifySite() && !isZdfSite())) return;
           const t = video?.currentTime;
           if (isFinite(t)) {
             lastVideoTimeByVideo.set(video, t);
@@ -761,6 +846,15 @@
     const label = cleanText(track?.label || "");
     if (/章节|chapter|chapters|kapitel|chapitre/i.test(label)) return false;
     return true;
+  }
+
+  function handleZdfTimedPlayback(video, currentTime) {
+    if (!Array.isArray(lastSegments) || !lastSegments.length) {
+      scheduleScan();
+      return;
+    }
+    enqueueTimedSubtitleSegments(lastSegments, currentTime, "zdf-sub");
+    renderDueSegments(currentTime, lastSegments);
   }
 
   function loadRuntimeConfig() {
@@ -975,7 +1069,8 @@
     const activeIds = new Set();
     const currentActiveCues = [];
     const videoTime = videoRef?.currentTime;
-    const validateCueTime = isSpotifySite() && isFinite(videoTime ?? NaN);
+    const validateCueTime =
+      (isSpotifySite() || isZdfSite()) && isFinite(videoTime ?? NaN);
 
     // translate active cues immediately
     for (let i = 0; i < activeCues.length; i += 1) {
@@ -1085,7 +1180,7 @@
     if (existing) clearTimeout(existing);
     const timer = setTimeout(() => {
       spotifyCueRefreshTimers.delete(video);
-      if (!overlayEnabled || !isSpotifySite()) return;
+      if (!overlayEnabled || (!isSpotifySite() && !isZdfSite())) return;
       const tracks = video?.textTracks || [];
       for (let i = 0; i < tracks.length; i += 1) {
         handleCueChange(tracks[i], video);
@@ -1273,6 +1368,75 @@
     scheduleQueueProcessing();
   }
 
+  function enqueueTimedSubtitleSegments(segments, currentTime, groupPrefix) {
+    if (!Array.isArray(segments) || !segments.length) return;
+    if (!isFinite(currentTime ?? NaN)) return;
+    const chunkSize = Math.max(1, BATCH_SIZE);
+    const currentIdx = findActiveTimedSegmentIndex(segments, currentTime);
+    if (currentIdx < 0) return;
+    const currentChunkId = Math.floor(currentIdx / chunkSize);
+    const currentChunkStart = currentChunkId * chunkSize;
+    const currentChunkEnd = Math.min(segments.length, currentChunkStart + chunkSize);
+    const activeSegments = segments
+      .slice(currentChunkStart, currentChunkEnd)
+      .filter((seg) => isTimedSegmentActive(seg, currentTime));
+    const visible = activeSegments.length ? activeSegments : [segments[currentIdx]];
+
+    enqueueChunk(
+      visible,
+      `${groupPrefix}-${currentChunkId}-visible`,
+      true,
+      {
+        renderPlaceholder: true,
+        chunkId: currentChunkId,
+        startOrder: Math.max(0, currentIdx - currentChunkStart),
+      }
+    );
+
+    const currentRemainder = segments.slice(currentChunkStart, currentChunkEnd);
+    enqueueChunk(
+      currentRemainder,
+      `${groupPrefix}-${currentChunkId}`,
+      false,
+      {
+        chunkId: currentChunkId,
+        startOrder: 0,
+      }
+    );
+
+    if (PREFETCH_AHEAD <= 0) return;
+    const nextChunkId = currentChunkId + 1;
+    if (nextChunkId <= lastPrefetchedChunkId) return;
+    const nextStart = nextChunkId * chunkSize;
+    const nextEnd = Math.min(segments.length, nextStart + chunkSize);
+    enqueueChunk(
+      segments.slice(nextStart, nextEnd),
+      `${groupPrefix}-${nextChunkId}`,
+      false,
+      {
+        chunkId: nextChunkId,
+        startOrder: 0,
+      }
+    );
+    lastPrefetchedChunkId = nextChunkId;
+  }
+
+  function findActiveTimedSegmentIndex(segments, currentTime) {
+    const activeIdx = segments.findIndex((seg) =>
+      isTimedSegmentActive(seg, currentTime)
+    );
+    if (activeIdx >= 0) return activeIdx;
+    return findCurrentSegmentIndex(segments, currentTime);
+  }
+
+  function isTimedSegmentActive(seg, currentTime) {
+    if (!seg || !isFinite(currentTime ?? NaN)) return false;
+    const start = Number(seg.seconds);
+    const end = Number(seg.endSeconds);
+    if (!isFinite(start)) return false;
+    return start <= currentTime + 0.2 && (!isFinite(end) || end >= currentTime - 0.2);
+  }
+
   function collectTranscriptSegments() {
     const nodes = new Set();
     SELECTORS.forEach((selector) => {
@@ -1305,6 +1469,672 @@
     youtubeTranscriptState.anchorSeconds = null;
     youtubeTranscriptState.panel = null;
     return [];
+  }
+
+  async function collectZdfSubtitleSegments(video) {
+    const contentId = getZdfContentIdFromLocation();
+    if (!contentId) return [];
+    const mediaKey = `${location.origin}${location.pathname}||${contentId}`;
+    if (zdfSubtitleState.mediaKey === mediaKey) {
+      if (zdfSubtitleState.segments.length) return zdfSubtitleState.segments;
+      if (zdfSubtitleState.loadingPromise) return zdfSubtitleState.loadingPromise;
+    }
+
+    zdfSubtitleState.mediaKey = mediaKey;
+    zdfSubtitleState.tracksKey = "";
+    zdfSubtitleState.segments = [];
+    zdfSubtitleState.loadingPromise = loadZdfSubtitleSegments()
+      .then((segments) => {
+        zdfSubtitleState.segments = segments;
+        zdfSubtitleState.tracksKey = segments.length ? "metadata-captions" : "";
+        return segments;
+      })
+      .catch(() => [])
+      .finally(() => {
+        zdfSubtitleState.loadingPromise = null;
+      });
+    return zdfSubtitleState.loadingPromise;
+  }
+
+  function getZdfContentIdFromLocation() {
+    const parts = String(location.pathname || "")
+      .split("/")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const last = parts[parts.length - 1] || "";
+    return last.replace(/\.html$/i, "");
+  }
+
+  async function loadZdfSubtitleSegments() {
+    const trackSegments = collectZdfSegmentsFromTextTracks();
+    if (trackSegments.length) return trackSegments;
+
+    const capturedSegments = await loadZdfSubtitleSegmentsFromCapturedHints();
+    if (capturedSegments.length) return capturedSegments;
+
+    const pageJsonSegments = await loadZdfSubtitleSegmentsFromPageJson();
+    if (pageJsonSegments.length) return pageJsonSegments;
+    return [];
+  }
+
+  function collectZdfSegmentsFromTextTracks() {
+    const videos = getAllVideos();
+    const segments = [];
+    videos.forEach((video) => {
+      const tracks = video?.textTracks || [];
+      for (let i = 0; i < tracks.length; i += 1) {
+        const track = tracks[i];
+        try {
+          track.mode = "hidden";
+        } catch (_) {
+          // ignore read-only tracks
+        }
+        const cues = track?.cues || [];
+        for (let j = 0; j < cues.length; j += 1) {
+          const segment = cueToSegment(cues[j]);
+          if (!segment?.text || !isLikelySubtitleText(segment.text)) continue;
+          segments.push({
+            ...segment,
+            id: `zdf-track-${i + 1}-${j + 1}-${segment.id}`.slice(0, 240),
+            endSeconds: isFinite(cues[j]?.endTime ?? NaN) ? cues[j].endTime : null,
+          });
+        }
+      }
+    });
+    return dedupeTimedSegments(segments);
+  }
+
+  async function loadZdfSubtitleSegmentsFromPageJson() {
+    const roots = collectZdfPageJsonRoots();
+    for (const root of roots) {
+      if (root?.content && root?.apiToken) {
+        const fromPlayer = await loadZdfSubtitleSegmentsFromPlayerObject(
+          root,
+          location.href
+        );
+        if (fromPlayer.length) return fromPlayer;
+      }
+      const direct = await loadZdfCaptionFromJsonRoot(root, location.href);
+      if (direct.length) return direct;
+      const ptmdUrl = findZdfPtmdUrl(root, location.href);
+      if (ptmdUrl) {
+        const fromPtmd = await loadZdfCaptionFromPtmdUrl(ptmdUrl, {
+          referrer: location.href,
+        });
+        if (fromPtmd.length) return fromPtmd;
+      }
+    }
+    return [];
+  }
+
+  function collectZdfPageJsonRoots() {
+    const roots = [];
+    const seenText = new Set();
+    const pushJsonText = (text) => {
+      const raw = String(text || "").trim();
+      if (!raw || raw.length < 2 || seenText.has(raw)) return;
+      seenText.add(raw);
+      const candidates = extractJsonCandidates(raw);
+      candidates.forEach((candidate) => {
+        try {
+          roots.push(JSON.parse(decodeHtmlEntities(candidate)));
+        } catch (_) {
+          // ignore non-json scripts
+        }
+      });
+    };
+
+    document.querySelectorAll("script").forEach((script) => {
+      const text = script.textContent || "";
+      if (/caption|subtitle|untertitel|ptmd|zdfplayer|apiToken/i.test(text)) {
+        pushJsonText(text);
+      }
+      const playerAttr = script.getAttribute?.("data-zdfplayer-jsb");
+      if (playerAttr) pushJsonText(playerAttr);
+    });
+
+    collectDeepSelectorMatches(["[data-zdfplayer-jsb]"]).forEach((node) => {
+      pushJsonText(node.getAttribute?.("data-zdfplayer-jsb") || "");
+    });
+
+    try {
+      if (window.__NEXT_DATA__) roots.push(window.__NEXT_DATA__);
+    } catch (_) {
+      // ignore inaccessible globals
+    }
+    return roots;
+  }
+
+  function extractJsonCandidates(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return [];
+    const candidates = [];
+    if (/^[\[{]/.test(raw)) candidates.push(raw);
+    const playerMatch = raw.match(/data-zdfplayer-jsb=(["'])([\s\S]*?)\1/i);
+    if (playerMatch?.[2]) candidates.push(playerMatch[2]);
+    const nextMatch = raw.match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+    if (nextMatch?.[1]) candidates.push(nextMatch[1]);
+    return candidates;
+  }
+
+  async function loadZdfSubtitleSegmentsFromCapturedHints() {
+    const hints = getZdfCapturedHints();
+    for (const hint of hints) {
+      const segments = await loadZdfSubtitleSegmentsFromCapturedHint(hint);
+      if (segments.length) return segments;
+    }
+    return [];
+  }
+
+  function getZdfCapturedHints() {
+    try {
+      return Array.isArray(window.__spt_zdf_resource_hints__)
+        ? [...window.__spt_zdf_resource_hints__]
+        : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  async function loadZdfSubtitleSegmentsFromCapturedHint(hint) {
+    const url = String(hint?.url || location.href);
+    const text = String(hint?.text || "");
+    if (!text) return [];
+    try {
+      if (/WEBVTT/i.test(text.slice(0, 80)) || /\.vtt(?:$|[?#])/i.test(url)) {
+        return normalizeZdfSubtitleSegments(parseSubtitleDocument(text, url), "zdf-captured");
+      }
+      if (/<tt[\s>]|\.ttml|\.dfxp|\.srt/i.test(text + " " + url)) {
+        const parsed = normalizeZdfSubtitleSegments(
+          parseSubtitleDocument(text, url),
+          "zdf-captured"
+        );
+        if (parsed.length) return parsed;
+      }
+      if (/#EXTM3U/i.test(text) || /\.m3u8(?:$|[?#])/i.test(url)) {
+        const subtitleUrls = extractSubtitleUrlsFromM3u8(text, url);
+        for (const subtitleUrl of subtitleUrls) {
+          const segments = await loadZdfSubtitleSegmentsFromResourceUrl(subtitleUrl);
+          if (segments.length) return segments;
+        }
+      }
+      if (/<MPD[\s>]/i.test(text) || /\.mpd(?:$|[?#])/i.test(url)) {
+        const subtitleUrls = extractSubtitleUrlsFromMpd(text, url);
+        for (const subtitleUrl of subtitleUrls) {
+          const segments = await loadZdfSubtitleSegmentsFromResourceUrl(subtitleUrl);
+          if (segments.length) return segments;
+        }
+      }
+      const roots = parseZdfJsonCandidates(text);
+      for (const root of roots) {
+        if (root?.content && root?.apiToken) {
+          const fromPlayer = await loadZdfSubtitleSegmentsFromPlayerObject(
+            root,
+            url
+          );
+          if (fromPlayer.length) return fromPlayer;
+        }
+        const direct = await loadZdfCaptionFromJsonRoot(root, url);
+        if (direct.length) return direct;
+        const ptmdUrl = findZdfPtmdUrl(root, url);
+        if (ptmdUrl) {
+          const fromPtmd = await loadZdfCaptionFromPtmdUrl(ptmdUrl, {
+            referrer: location.href,
+          });
+          if (fromPtmd.length) return fromPtmd;
+        }
+      }
+    } catch (_) {
+      return [];
+    }
+    return [];
+  }
+
+  function parseZdfJsonCandidates(text) {
+    const raw = String(text || "").trim();
+    const roots = extractJsonCandidates(raw)
+      .map((candidate) => {
+        try {
+          return JSON.parse(decodeHtmlEntities(candidate));
+        } catch (_) {
+          return null;
+        }
+      })
+      .filter(Boolean);
+    if (roots.length) return roots;
+
+    const extracted = [];
+    const markers = ["captions", "formitaeten", "priorityList", "apiToken"];
+    markers.forEach((marker) => {
+      let index = raw.indexOf(`"${marker}"`);
+      while (index >= 0) {
+        const start = raw.lastIndexOf("{", index);
+        if (start >= 0) {
+          const objectText = extractBalancedJsonObject(raw, start);
+          if (objectText) {
+            try {
+              extracted.push(JSON.parse(objectText));
+            } catch (_) {
+              // ignore malformed embedded object
+            }
+          }
+        }
+        index = raw.indexOf(`"${marker}"`, index + marker.length + 2);
+      }
+    });
+    return extracted;
+  }
+
+  function extractBalancedJsonObject(source, startIndex) {
+    const text = String(source || "");
+    if (text[startIndex] !== "{") return "";
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = startIndex; i < text.length; i += 1) {
+      const ch = text[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+      } else if (ch === "{") {
+        depth += 1;
+      } else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) return text.slice(startIndex, i + 1);
+      }
+    }
+    return "";
+  }
+
+  async function loadZdfSubtitleSegmentsFromResourceUrl(url) {
+    try {
+      if (/\.m3u8(?:$|[?#])/i.test(url)) {
+        const playlist = await fetchZdfText(url, "application/vnd.apple.mpegurl, application/x-mpegURL, text/plain, */*", {
+          referrer: location.href,
+        });
+        const subtitleUrls = extractSubtitleUrlsFromM3u8(playlist, url);
+        for (const subtitleUrl of subtitleUrls) {
+          const segments = await loadZdfSubtitleSegmentsFromResourceUrl(subtitleUrl);
+          if (segments.length) return segments;
+        }
+        return [];
+      }
+      if (/\.mpd(?:$|[?#])/i.test(url)) {
+        const manifest = await fetchZdfText(url, "application/dash+xml, application/xml, text/xml, text/plain, */*", {
+          referrer: location.href,
+        });
+        const subtitleUrls = extractSubtitleUrlsFromMpd(manifest, url);
+        for (const subtitleUrl of subtitleUrls) {
+          const segments = await loadZdfSubtitleSegmentsFromResourceUrl(subtitleUrl);
+          if (segments.length) return segments;
+        }
+        return [];
+      }
+      const body = await fetchZdfText(
+        url,
+        "text/vtt, application/ttml+xml, application/xml, text/xml, text/plain, */*",
+        { referrer: location.href }
+      );
+      return normalizeZdfSubtitleSegments(parseSubtitleDocument(body, url), "zdf-resource");
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function extractSubtitleUrlsFromM3u8(text, baseUrl) {
+    const urls = [];
+    const raw = String(text || "");
+    const mediaRegex = /#EXT-X-MEDIA:[^\n]*TYPE=SUBTITLES[^\n]*/gi;
+    let match;
+    while ((match = mediaRegex.exec(raw)) !== null) {
+      const uri = match[0].match(/URI=(?:"([^"]+)"|([^,\s]+))/i);
+      if (uri?.[1] || uri?.[2]) {
+        urls.push(new URL(uri[1] || uri[2], baseUrl).toString());
+      }
+    }
+    return urls;
+  }
+
+  function extractSubtitleUrlsFromMpd(text, baseUrl) {
+    try {
+      const doc = new DOMParser().parseFromString(String(text || ""), "application/xml");
+      const adaptationSets = Array.from(doc.querySelectorAll("AdaptationSet"))
+        .filter((set) => {
+          const attrs = [
+            set.getAttribute("mimeType"),
+            set.getAttribute("contentType"),
+            set.getAttribute("codecs"),
+            set.getAttribute("lang"),
+          ]
+            .filter(Boolean)
+            .join(" ");
+          return /text|subtitle|caption|ttml|vtt|stpp|wvtt|deu|ger|de/i.test(attrs);
+        });
+      const urls = [];
+      const mpdBase = cleanText(doc.querySelector("MPD > BaseURL")?.textContent || "");
+      const resolvedBase = mpdBase ? new URL(mpdBase, baseUrl).toString() : baseUrl;
+      adaptationSets.forEach((set) => {
+        const setBase = cleanText(set.querySelector(":scope > BaseURL")?.textContent || "");
+        const setBaseUrl = setBase ? new URL(setBase, resolvedBase).toString() : resolvedBase;
+        const baseNodes = [
+          ...Array.from(set.querySelectorAll(":scope > Representation > BaseURL")),
+        ];
+        baseNodes.forEach((node) => {
+          const value = cleanText(node.textContent || "");
+          if (value) urls.push(new URL(value, setBaseUrl).toString());
+        });
+
+        Array.from(set.querySelectorAll(":scope > Representation")).forEach((rep) => {
+          const repBase = cleanText(rep.querySelector(":scope > BaseURL")?.textContent || "");
+          if (repBase) {
+            urls.push(new URL(repBase, setBaseUrl).toString());
+          }
+          const template = rep.querySelector(":scope > SegmentTemplate") || set.querySelector(":scope > SegmentTemplate");
+          const media = template?.getAttribute("media") || "";
+          if (media && !media.includes("$Number") && !media.includes("$Time")) {
+            const repId = rep.getAttribute("id") || "";
+            const bandwidth = rep.getAttribute("bandwidth") || "";
+            const filled = media
+              .replace(/\$RepresentationID\$/g, repId)
+              .replace(/\$Bandwidth\$/g, bandwidth);
+            urls.push(new URL(filled, setBaseUrl).toString());
+          }
+        });
+      });
+      return Array.from(new Set(urls)).filter((url) =>
+        isLikelyZdfSubtitleResourceUrl(url)
+      );
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function isLikelyZdfSubtitleResourceUrl(url) {
+    return /(?:caption|subtitle|untertitel|webvtt|\.vtt|\.ttml|\.dfxp|\.srt)(?:$|[?#/_-])/i.test(
+      String(url || "")
+    );
+  }
+
+  async function loadZdfCaptionFromJsonRoot(root, baseUrl) {
+    const caption = chooseZdfCaption(findZdfCaptions(root));
+    if (!caption?.uri) return [];
+    const captionUrl = new URL(caption.uri, baseUrl).toString();
+    const body = await fetchZdfText(
+      captionUrl,
+      "text/vtt, application/ttml+xml, application/xml, text/xml, text/plain, */*",
+      { referrer: location.href }
+    );
+    return normalizeZdfSubtitleSegments(parseSubtitleDocument(body, captionUrl), "zdf-json");
+  }
+
+  async function loadZdfCaptionFromPtmdUrl(ptmdUrl, options = {}) {
+    try {
+      const ptmdText = await fetchZdfText(ptmdUrl, "application/json", options);
+      const ptmd = JSON.parse(ptmdText);
+      const caption = chooseZdfCaption(findZdfCaptions(ptmd));
+      if (!caption?.uri) return [];
+      const captionUrl = new URL(caption.uri, ptmdUrl).toString();
+      const body = await fetchZdfText(
+        captionUrl,
+        "text/vtt, application/ttml+xml, application/xml, text/xml, text/plain, */*",
+        { referrer: options.referrer || location.href }
+      );
+      return normalizeZdfSubtitleSegments(parseSubtitleDocument(body, captionUrl), "zdf-ptmd");
+    } catch (_) {
+      return [];
+    }
+  }
+
+  async function loadZdfSubtitleSegmentsFromPlayerObject(player, pageUrl) {
+    try {
+      const contentUrl = new URL(player.content, pageUrl).toString();
+      const contentText = await fetchZdfText(
+        contentUrl,
+        "application/json",
+        {
+          apiToken: player.apiToken,
+          referrer: pageUrl,
+        }
+      );
+      const content = JSON.parse(contentText);
+      const ptmdUrl = findZdfPtmdUrl(content, contentUrl);
+      if (!ptmdUrl) return [];
+      return loadZdfCaptionFromPtmdUrl(ptmdUrl, {
+        apiToken: player.apiToken,
+        referrer: pageUrl,
+      });
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function normalizeZdfSubtitleSegments(segments, idPrefix = "zdf-sub") {
+    return dedupeTimedSegments(
+      (segments || [])
+        .map((segment, idx) => ({
+          ...segment,
+          id: `${idPrefix}-${idx + 1}-${formatTimestamp(segment.seconds)}|${segment.text}`.slice(0, 240),
+          timestamp: formatTimestamp(segment.seconds),
+        }))
+        .filter(
+          (segment) =>
+            segment.text &&
+            isLikelySubtitleText(segment.text) &&
+            isFinite(segment.seconds ?? NaN)
+        )
+    );
+  }
+
+  function dedupeTimedSegments(segments) {
+    const seen = new Set();
+    return (segments || [])
+      .filter((segment) => {
+        const key = `${Math.round((segment.seconds || 0) * 10)}|${normalizeCompareText(segment.text)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => (a.seconds ?? 0) - (b.seconds ?? 0));
+  }
+
+  function decodeHtmlEntities(text) {
+    const textarea = document.createElement("textarea");
+    textarea.innerHTML = String(text || "");
+    return textarea.value;
+  }
+
+  function findZdfPtmdUrl(content, baseUrl) {
+    const target =
+      content?.mainVideoContent?.["http://zdf.de/rels/target"] ||
+      content?.mainVideoContent?.target ||
+      content?.["http://zdf.de/rels/target"] ||
+      content;
+    const candidates = [];
+    const seen = new Set();
+    const visit = (value, keyHint = "") => {
+      if (value == null) return;
+      if (typeof value === "string") {
+        if (/ptmd/i.test(keyHint) || /\/ptmd(?:\/|$)|ptmd-template/i.test(value)) {
+          candidates.push(value);
+        }
+        return;
+      }
+      if (typeof value !== "object" || seen.has(value)) return;
+      seen.add(value);
+      if (Array.isArray(value)) {
+        value.forEach((entry) => visit(entry, keyHint));
+        return;
+      }
+      Object.keys(value).forEach((key) => visit(value[key], key));
+    };
+    visit(target);
+    const raw = candidates.find(Boolean);
+    if (!raw) return "";
+    return new URL(raw.replace("{playerId}", "android_native_5"), baseUrl).toString();
+  }
+
+  async function fetchZdfText(url, accept, options = {}) {
+    const response = await safeSendMessage(
+      {
+        type: "fetchZdfResource",
+        url,
+        accept,
+        apiToken: options.apiToken,
+        referrer: options.referrer,
+      },
+      { ok: false, error: "ZDF resource request failed." }
+    );
+    if (!response?.ok) {
+      throw new Error(response?.error || "ZDF resource request failed.");
+    }
+    return response.text || "";
+  }
+
+  function findZdfCaptions(root) {
+    const captions = [];
+    const seen = new Set();
+    const visit = (value, keyHint = "", underCaption = false) => {
+      if (!value || typeof value !== "object" || seen.has(value)) return;
+      seen.add(value);
+      const captionScope =
+        underCaption || /caption|subtitle|untertitel/i.test(keyHint);
+      if (Array.isArray(value)) {
+        value.forEach((entry) => visit(entry, keyHint, captionScope));
+        return;
+      }
+      const resourceHint = [
+        value.format,
+        value.type,
+        value.mimeType,
+        value.kind,
+        value.uri,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      if (
+        typeof value.uri === "string" &&
+        (captionScope || /caption|subtitle|untertitel|vtt|ttml|xml|srt/i.test(resourceHint))
+      ) {
+        captions.push(value);
+      }
+      Object.keys(value).forEach((key) => {
+        if (/caption|subtitle|untertitel/i.test(key) || typeof value[key] === "object") {
+          visit(value[key], key, captionScope);
+        }
+      });
+    };
+    visit(root);
+    return captions.filter((caption) => caption?.uri);
+  }
+
+  function chooseZdfCaption(captions) {
+    if (!Array.isArray(captions) || !captions.length) return null;
+    return (
+      captions.find((caption) => /^(deu?|ger|de)$/i.test(caption.language || "")) ||
+      captions.find((caption) => /vtt|ttml|xml|srt/i.test(caption.format || caption.type || caption.uri || "")) ||
+      captions[0]
+    );
+  }
+
+  function parseSubtitleDocument(body, sourceUrl = "") {
+    const text = String(body || "").trim();
+    if (!text) return [];
+    if (/WEBVTT/i.test(text.slice(0, 80)) || /\.vtt(?:$|[?#])/i.test(sourceUrl)) {
+      return parseVttOrSrtSubtitles(text);
+    }
+    if (/<tt[\s>]|<p[\s>]/i.test(text) || /\.xml(?:$|[?#])/i.test(sourceUrl)) {
+      const parsed = parseTtmlSubtitles(text);
+      if (parsed.length) return parsed;
+    }
+    return parseVttOrSrtSubtitles(text);
+  }
+
+  function parseVttOrSrtSubtitles(text) {
+    return String(text || "")
+      .replace(/^\uFEFF/, "")
+      .split(/\r?\n\r?\n+/)
+      .map((block) => {
+        const lines = block
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean);
+        const timingIndex = lines.findIndex((line) => /-->/i.test(line));
+        if (timingIndex < 0) return null;
+        const timing = lines[timingIndex].match(
+          /(\d{1,2}:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?\s*-->\s*(\d{1,2}:)?\d{1,2}:\d{2}(?:[.,]\d{1,3})?/i
+        );
+        if (!timing) return null;
+        const parts = timing[0].split(/-->/);
+        const seconds = parseSubtitleTimestamp(parts[0]);
+        const endSeconds = parseSubtitleTimestamp(parts[1]);
+        const cueText = lines
+          .slice(timingIndex + 1)
+          .join(" ")
+          .replace(/<[^>]+>/g, "")
+          .replace(/\{\\[^}]+\}/g, "");
+        return {
+          seconds,
+          endSeconds,
+          text: normalizeSubtitleCueText(cueText),
+        };
+      })
+      .filter((segment) => segment?.text && isFinite(segment.seconds ?? NaN));
+  }
+
+  function parseTtmlSubtitles(text) {
+    try {
+      const doc = new DOMParser().parseFromString(text, "application/xml");
+      const nodes = Array.from(doc.querySelectorAll("p"));
+      return nodes
+        .map((node) => {
+          const begin = node.getAttribute("begin");
+          const end = node.getAttribute("end");
+          const dur = node.getAttribute("dur");
+          const seconds = parseSubtitleTimestamp(begin);
+          const duration = parseSubtitleTimestamp(dur);
+          const endSeconds =
+            parseSubtitleTimestamp(end) ??
+            (isFinite(seconds ?? NaN) && isFinite(duration ?? NaN)
+              ? seconds + duration
+              : null);
+          return {
+            seconds,
+            endSeconds,
+            text: normalizeSubtitleCueText(node.textContent || ""),
+          };
+        })
+        .filter((segment) => segment.text && isFinite(segment.seconds ?? NaN));
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function parseSubtitleTimestamp(value) {
+    const raw = String(value || "").trim().replace(",", ".");
+    if (!raw) return null;
+    const secondsMatch = raw.match(/^(\d+(?:\.\d+)?)s$/i);
+    if (secondsMatch) return parseFloat(secondsMatch[1]);
+    const parts = raw.match(
+      /(?:(\d{1,2}):)?(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?/
+    );
+    if (!parts) return null;
+    const hours = parts[1] ? parseInt(parts[1], 10) : 0;
+    const minutes = parseInt(parts[2], 10);
+    const seconds = parseInt(parts[3], 10);
+    const millis = parts[4] ? parseInt(parts[4].padEnd(3, "0"), 10) : 0;
+    if ([hours, minutes, seconds, millis].some((n) => Number.isNaN(n))) {
+      return null;
+    }
+    return hours * 3600 + minutes * 60 + seconds + millis / 1000;
   }
 
   function collectYouTubeTranscriptFromPanelText() {
@@ -1742,7 +2572,7 @@
     }
 
     // If translations arrived while video is paused, render immediately using current time
-    if (isYouTubeSite()) {
+    if (isYouTubeSite() || isZdfSite()) {
       const video = getPrimaryVideo();
       const t = video?.currentTime;
       if (isFinite(t)) {
@@ -1900,7 +2730,7 @@
     }
 
     // Render any ready lines even if playback is paused
-    if (isYouTubeSite()) {
+    if (isYouTubeSite() || isZdfSite()) {
       const video = getPrimaryVideo();
       const t = video?.currentTime;
       if (isFinite(t)) {

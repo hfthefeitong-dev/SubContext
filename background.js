@@ -52,6 +52,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "fetchZdfResource") {
+    fetchZdfResource(message.url, {
+      accept: message.accept,
+      apiToken: message.apiToken,
+      referrer: message.referrer,
+    })
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) =>
+        sendResponse({ ok: false, error: error?.message || String(error) })
+      );
+    return true;
+  }
+
   if (message?.type === "openOptions") {
     chrome.runtime.openOptionsPage(() => {
       if (chrome.runtime.lastError) {
@@ -423,6 +436,45 @@ async function smoothTranslations(
 
   const parsed = parseDelimitedTranslation(translation, total);
   return parsed;
+}
+
+async function fetchZdfResource(rawUrl, options = {}) {
+  const url = validateZdfResourceUrl(rawUrl);
+  const headers = {
+    Accept: options.accept || "*/*",
+  };
+  if (options.apiToken) {
+    headers["Api-Auth"] = `Bearer ${options.apiToken}`;
+  }
+  const fetchOptions = {
+    method: "GET",
+    headers,
+  };
+  if (options.referrer) {
+    fetchOptions.referrer = options.referrer;
+  }
+  const response = await fetchWithTimeout(
+    url.toString(),
+    fetchOptions,
+    DEFAULT_REQUEST_TIMEOUT_MS
+  );
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw createHttpError("ZDF resource request failed", response.status, errorText);
+  }
+  return {
+    url: response.url || url.toString(),
+    contentType: response.headers.get("content-type") || "",
+    text: await response.text(),
+  };
+}
+
+function validateZdfResourceUrl(rawUrl) {
+  const url = new URL(String(rawUrl || ""));
+  if (url.protocol !== "https:") {
+    throw new Error("Unsupported ZDF resource URL.");
+  }
+  return url;
 }
 
 function normalizeEndpoint(url) {

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "字幕上下文翻译先锋版",
-  "version": "1.2.0",
-  "description": "实时抓取字幕（Spotify等）并结合上下文翻译为中文的扩展。",
+  "version": "1.2.1",
+  "description": "实时抓取字幕（Spotify、YouTube、ZDF等）并结合上下文翻译为中文的扩展。",
   "icons": {
     "16": "logo.png",
     "32": "logo.png",
@@ -20,6 +20,29 @@
   "content_scripts": [
     {
       "matches": [
+        "https://zdf.de/*",
+        "https://*.zdf.de/*"
+      ],
+      "js": [
+        "zdfBridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://zdf.de/*",
+        "https://*.zdf.de/*"
+      ],
+      "js": [
+        "zdfPageHook.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
         "https://open.spotify.com/*",
         "https://m.youtube.com/*",
         "https://www.youtube.com/*"
@@ -28,6 +51,17 @@
         "contentScript.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://zdf.de/*",
+        "https://*.zdf.de/*"
+      ],
+      "js": [
+        "contentScript.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "background": {
