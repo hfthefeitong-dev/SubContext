@@ -72,6 +72,7 @@
   const DEFAULT_ORIGINAL_COLOR_SCHEME = "dark";
   const DEFAULT_TRANSLATION_COLOR_SCHEME = "dark";
   const DEFAULT_HIDE_TRANSLATION_TIMESTAMP = false;
+  const DEFAULT_SHOW_TRANSLATION = true;
   const DEFAULT_LIMIT_DISPLAY_LINES = false;
   const DEFAULT_DISPLAY_LINE_LIMIT = 1;
   const DEFAULT_ENABLE_SOURCE_CORRECTIONS = false;
@@ -105,6 +106,7 @@
   let ORIGINAL_COLOR_SCHEME = DEFAULT_ORIGINAL_COLOR_SCHEME;
   let TRANSLATION_COLOR_SCHEME = DEFAULT_TRANSLATION_COLOR_SCHEME;
   let HIDE_TRANSLATION_TIMESTAMP = DEFAULT_HIDE_TRANSLATION_TIMESTAMP;
+  let SHOW_TRANSLATION = DEFAULT_SHOW_TRANSLATION;
   let LIMIT_DISPLAY_LINES = DEFAULT_LIMIT_DISPLAY_LINES;
   let DISPLAY_LINE_LIMIT = DEFAULT_DISPLAY_LINE_LIMIT;
   let ENABLE_SOURCE_CORRECTIONS = DEFAULT_ENABLE_SOURCE_CORRECTIONS;
@@ -323,6 +325,7 @@
   let listEl = null;
   let openOptionsButton = null;
   let scrollLatestButton = null;
+  let toggleTranslationButton = null;
   let fontDecButton = null;
   let fontIncButton = null;
   let closeButton = null;
@@ -338,6 +341,7 @@
     listEl = overlay.querySelector(".spt-items");
     openOptionsButton = overlay.querySelector(".spt-open-options");
     scrollLatestButton = overlay.querySelector(".spt-scroll-latest");
+    toggleTranslationButton = overlay.querySelector(".spt-toggle-translation");
     fontDecButton = overlay.querySelector(".spt-font-dec");
     fontIncButton = overlay.querySelector(".spt-font-inc");
     closeButton = overlay.querySelector(".spt-close");
@@ -354,6 +358,9 @@
     scrollLatestButton?.addEventListener("click", () => {
       listEl?.scrollTo?.({ top: 0, behavior: "smooth" });
     });
+    toggleTranslationButton?.addEventListener("click", () =>
+      toggleTranslationVisibility()
+    );
     closeButton?.addEventListener("click", () => closeOverlay());
 
     loadPosition(overlay);
@@ -869,6 +876,7 @@
         fontTranslation: DEFAULT_FONT_TRANSLATION,
         enableSourceCorrections: DEFAULT_ENABLE_SOURCE_CORRECTIONS,
         hideTranslationTimestamp: DEFAULT_HIDE_TRANSLATION_TIMESTAMP,
+        showTranslation: DEFAULT_SHOW_TRANSLATION,
         limitDisplayLines: DEFAULT_LIMIT_DISPLAY_LINES,
         displayLineLimit: DEFAULT_DISPLAY_LINE_LIMIT,
         originalColorScheme: DEFAULT_ORIGINAL_COLOR_SCHEME,
@@ -918,6 +926,7 @@
         );
         ENABLE_SOURCE_CORRECTIONS = !!res.enableSourceCorrections;
         HIDE_TRANSLATION_TIMESTAMP = !!res.hideTranslationTimestamp;
+        SHOW_TRANSLATION = res.showTranslation !== false;
         LIMIT_DISPLAY_LINES = !!res.limitDisplayLines;
         DISPLAY_LINE_LIMIT = clampInt(
           res.displayLineLimit,
@@ -933,6 +942,7 @@
         overlay.style.maxHeight = `${PANEL_HEIGHT_VH}vh`;
         overlay.style.width = `${PANEL_WIDTH_VW}vw`;
         overlay.style.maxWidth = `${PANEL_WIDTH_VW}vw`;
+        applyTranslationVisibility();
         applyDisplayLimitMode();
         applyFontSizes();
       }
@@ -1033,6 +1043,10 @@
         const cached = translationCache.get(id) || translationEl.textContent || "";
         translationEl.textContent = formatTranslationForDisplay(cached, false);
       });
+    }
+    if (changes.showTranslation) {
+      SHOW_TRANSLATION = changes.showTranslation.newValue !== false;
+      applyTranslationVisibility();
     }
     if (changes.limitDisplayLines) {
       LIMIT_DISPLAY_LINES = !!changes.limitDisplayLines.newValue;
@@ -2983,6 +2997,28 @@
     return clampInt(DISPLAY_LINE_LIMIT, 1, 3, DEFAULT_DISPLAY_LINE_LIMIT);
   }
 
+  function toggleTranslationVisibility() {
+    SHOW_TRANSLATION = !SHOW_TRANSLATION;
+    applyTranslationVisibility();
+    safeStorageSet({ showTranslation: SHOW_TRANSLATION });
+  }
+
+  function applyTranslationVisibility() {
+    if (!overlay) return;
+    overlay.classList.toggle("spt-hide-translation", !SHOW_TRANSLATION);
+    if (toggleTranslationButton) {
+      const label = SHOW_TRANSLATION ? "关闭译文" : "打开译文";
+      toggleTranslationButton.title = label;
+      toggleTranslationButton.setAttribute("aria-label", label);
+      toggleTranslationButton.setAttribute(
+        "aria-pressed",
+        SHOW_TRANSLATION ? "true" : "false"
+      );
+      toggleTranslationButton.classList.toggle("spt-active", SHOW_TRANSLATION);
+    }
+    fitLimitedOverlayToViewport();
+  }
+
   function applyDisplayLimitMode() {
     if (!overlay) return;
     overlay.classList.toggle("spt-limit-display", !!LIMIT_DISPLAY_LINES);
@@ -3409,6 +3445,9 @@
       <div class="spt-header">
         <span class="spt-title">字幕上下文翻译</span>
         <div class="spt-actions">
+          <button class="spt-toggle-translation" title="关闭译文" aria-label="关闭译文" aria-pressed="false">
+            <span class="spt-icon">译</span>
+          </button>
           <button class="spt-font-dec" title="缩小字体">A-</button>
           <button class="spt-font-inc" title="放大字体">A+</button>
           <button class="spt-scroll-latest" title="回到最新字幕" aria-label="回到最新字幕">
@@ -3511,6 +3550,22 @@
         background: rgba(0, 0, 0, 0.06);
         color: #111;
         transform: scale(1.05);
+      }
+
+      .spt-actions button.spt-active {
+        background: rgba(99, 102, 241, 0.12);
+        color: #4f46e5;
+      }
+
+      .spt-actions .spt-toggle-translation {
+        padding: 4px;
+        min-width: 24px;
+        height: 24px;
+      }
+
+      .spt-actions .spt-toggle-translation .spt-icon {
+        font-size: 13px;
+        transform: translateY(1px);
       }
       
       .spt-icon { font-size: 16px; line-height: 1; }
@@ -3663,6 +3718,14 @@
         color: var(--spt-translation-color, #1f2937); /* 可通过设置选择深色/绿色 */
         line-height: 1.5;
         text-shadow: 0 1px 0 rgba(255,255,255,0.5); /* 增加一点立体感 */
+      }
+
+      .spt-overlay.spt-hide-translation .spt-translation {
+        display: none;
+      }
+
+      .spt-overlay.spt-hide-translation .spt-original {
+        margin-bottom: 0;
       }
 
       /* 调整手柄 */
