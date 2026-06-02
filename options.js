@@ -14,6 +14,7 @@ const defaults = {
   displayLineLimit: 1,
   originalColorScheme: "dark",
   translationColorScheme: "dark",
+  theme: "auto",
 };
 
 const apiKeyInput = document.getElementById("apiKey");
@@ -34,6 +35,7 @@ const translationColorSelect = document.getElementById("translationColorScheme")
 const statusEl = document.getElementById("status");
 const modelNoteEl = document.getElementById("modelNote");
 const saveBtn = document.getElementById("saveBtn");
+const themeToggleBtn = document.getElementById("themeToggle");
 
 const MODEL_PRICE = {
   "gpt-4.1-mini": "$0.4 / 1M",
@@ -44,10 +46,16 @@ const MODEL_PRICE = {
   "gemini-3-flash-preview": "in: $0.50 / out: $3 per 1M",
 };
 
+let currentTheme = "auto";
+
 init();
 
 async function init() {
   const stored = await chrome.storage.local.get(defaults);
+  
+  // Theme initialization
+  applyTheme(stored.theme || "auto");
+
   apiKeyInput.value = stored.apiKey || "";
   geminiApiKeyInput.value = stored.geminiApiKey || "";
   apiBaseInput.value = stored.apiBaseUrl || defaults.apiBaseUrl;
@@ -57,36 +65,135 @@ async function init() {
     stored.geminiThinkingLevel,
     defaults.geminiThinkingLevel
   );
+  
   syncTemperatureLock();
   syncGeminiThinkingLock();
   updateModelNote();
+  
   const prefetch = stored.prefetchAhead ?? defaults.prefetchAhead;
   prefetchAheadInput.value = prefetch;
+  
   const smooth = stored.smoothLines ?? defaults.smoothLines;
   smoothLinesInput.value = smooth;
+  
   syncSegmentControls();
+  
   enableSourceCorrectionsInput.checked =
     !!(stored.enableSourceCorrections ?? defaults.enableSourceCorrections);
   hideTranslationTimestampInput.checked =
     !!(stored.hideTranslationTimestamp ?? defaults.hideTranslationTimestamp);
   limitDisplayLinesInput.checked =
     !!(stored.limitDisplayLines ?? defaults.limitDisplayLines);
+  
   displayLineLimitInput.value = clampInt(
     stored.displayLineLimit,
     1,
     3,
     defaults.displayLineLimit
   );
+  
   syncDisplayLineLimitControl();
   originalColorSelect.value = stored.originalColorScheme || defaults.originalColorScheme;
   translationColorSelect.value =
     stored.translationColorScheme || defaults.translationColorScheme;
+
+  // Initialize display badge for temperature
+  const tempValEl = document.getElementById("temperatureVal");
+  if (tempValEl) tempValEl.textContent = temperatureInput.value;
+
+  // Setup UI tabs, passwords visibility, and sliders
+  setupInteractiveUI();
+}
+
+// Set up UI navigation tabs, passwords visibility, and sliders listeners
+function setupInteractiveUI() {
+  // 1. Sidebar navigation tab switching
+  const navItems = document.querySelectorAll(".nav-item");
+  const tabPanes = document.querySelectorAll(".tab-pane");
+
+  navItems.forEach(item => {
+    item.addEventListener("click", () => {
+      const targetTab = item.getAttribute("data-tab");
+      
+      navItems.forEach(nav => nav.classList.remove("active"));
+      tabPanes.forEach(pane => pane.classList.remove("active"));
+
+      item.classList.add("active");
+      const targetEl = document.getElementById(targetTab);
+      if (targetEl) targetEl.classList.add("active");
+    });
+  });
+
+  // 2. Password visibility toggles
+  document.querySelectorAll(".password-toggle").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const targetId = btn.getAttribute("data-target");
+      const input = document.getElementById(targetId);
+      if (!input) return;
+      if (input.type === "password") {
+        input.type = "text";
+        btn.textContent = "🙈";
+      } else {
+        input.type = "password";
+        btn.textContent = "👁️";
+      }
+    });
+  });
+
+  // 3. Theme Toggle button listener
+  if (themeToggleBtn) {
+    themeToggleBtn.addEventListener("click", async () => {
+      let nextTheme = "auto";
+      if (currentTheme === "auto") {
+        nextTheme = "light";
+      } else if (currentTheme === "light") {
+        nextTheme = "dark";
+      } else {
+        nextTheme = "auto";
+      }
+      applyTheme(nextTheme);
+      await chrome.storage.local.set({ theme: nextTheme });
+    });
+  }
+}
+
+// Theme applier function
+function applyTheme(theme) {
+  currentTheme = theme;
+  const root = document.documentElement;
+  if (theme === "dark") {
+    root.setAttribute("data-theme", "dark");
+  } else if (theme === "light") {
+    root.setAttribute("data-theme", "light");
+  } else {
+    root.removeAttribute("data-theme");
+  }
+  
+  if (themeToggleBtn) {
+    const textEl = themeToggleBtn.querySelector(".theme-text");
+    const iconEl = themeToggleBtn.querySelector(".theme-icon");
+    if (theme === "dark") {
+      if (textEl) textEl.textContent = "深色外观";
+      if (iconEl) iconEl.textContent = "🌙";
+    } else if (theme === "light") {
+      if (textEl) textEl.textContent = "浅色外观";
+      if (iconEl) iconEl.textContent = "🌞";
+    } else {
+      if (textEl) textEl.textContent = "自动主题";
+      if (iconEl) iconEl.textContent = "🌓";
+    }
+  }
 }
 
 modelInput.addEventListener("change", () => {
   syncTemperatureLock();
   syncGeminiThinkingLock();
   updateModelNote();
+});
+
+temperatureInput.addEventListener("input", () => {
+  const tempValEl = document.getElementById("temperatureVal");
+  if (tempValEl) tempValEl.textContent = temperatureInput.value;
 });
 
 prefetchAheadInput.addEventListener("input", () => {
@@ -141,8 +248,8 @@ saveBtn.addEventListener("click", async () => {
     translationColorSelect.value === "green" ? "green" : "dark";
 
   if (isGeminiModel(model) && !geminiApiKey) {
-    statusEl.textContent = "使用 Gemini 模型时必须填写 Gemini API Key。";
-    statusEl.style.color = "#d33";
+    statusEl.textContent = "⚠️ 使用 Gemini 模型时必须填写 Gemini API Key。";
+    statusEl.style.color = "var(--danger)";
     return;
   }
 
@@ -164,8 +271,8 @@ saveBtn.addEventListener("click", async () => {
     translationColorScheme,
   });
   statusEl.textContent =
-    "已保存，返回播放页后字幕会自动刷新。";
-  statusEl.style.color = "#0c713a";
+    "✨ 已保存，返回播放页后字幕会自动刷新。";
+  statusEl.style.color = "var(--success)";
   setTimeout(() => (statusEl.textContent = ""), 2500);
 });
 
@@ -191,22 +298,41 @@ function syncSegmentControls() {
   batchSizeInput.value = prefetchAhead;
   batchSizeInput.disabled = true;
   smoothLinesInput.max = String(Math.max(0, prefetchAhead));
+  
+  // Update badge values
+  const prefetchValEl = document.getElementById("prefetchAheadVal");
+  if (prefetchValEl) prefetchValEl.textContent = prefetchAhead;
+
   if (prefetchAhead <= 0) {
     smoothLinesInput.value = "0";
     smoothLinesInput.disabled = true;
+    const smoothValEl = document.getElementById("smoothLinesVal");
+    if (smoothValEl) smoothValEl.textContent = "0";
     return;
   }
   smoothLinesInput.disabled = false;
   smoothLinesInput.value = String(
     clampInt(smoothLinesInput.value, 0, prefetchAhead, defaults.smoothLines)
   );
+  const smoothValEl = document.getElementById("smoothLinesVal");
+  if (smoothValEl) smoothValEl.textContent = smoothLinesInput.value;
 }
 
 function syncDisplayLineLimitControl() {
-  displayLineLimitInput.disabled = !limitDisplayLinesInput.checked;
+  const isChecked = limitDisplayLinesInput.checked;
+  displayLineLimitInput.disabled = !isChecked;
+  
+  const row = document.getElementById("displayLineLimitRow");
+  if (row) {
+    row.style.opacity = isChecked ? "1" : "0.5";
+    row.style.pointerEvents = isChecked ? "auto" : "none";
+  }
+  
   displayLineLimitInput.value = String(
     clampInt(displayLineLimitInput.value, 1, 3, defaults.displayLineLimit)
   );
+  const valEl = document.getElementById("displayLineLimitVal");
+  if (valEl) valEl.textContent = displayLineLimitInput.value;
 }
 
 function syncTemperatureLock() {

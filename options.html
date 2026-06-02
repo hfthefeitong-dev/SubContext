@@ -1,83 +1,349 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <title>设置 - 字幕上下文翻译</title>
+    <title>设置 - 字幕上下文翻译先锋版</title>
+    <!-- Modern typography from Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <style>
       :root {
+        --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        --transition-fast: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        --transition-normal: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        --radius-lg: 20px;
+        --radius-md: 12px;
+        --radius-sm: 8px;
+        
+        /* Light Theme Color System (Default) */
+        --bg-app: #f1f5f9;
+        --bg-sidebar: #ffffff;
+        --bg-card: rgba(255, 255, 255, 0.7);
+        --bg-input: #ffffff;
+        --bg-input-disabled: #f3f4f6;
+        --border-color: rgba(0, 0, 0, 0.08);
+        --border-focus: #6366f1;
+        --text-main: #1e293b;
+        --text-sub: #64748b;
+        --text-muted: #94a3b8;
         --primary: #6366f1;
-        --bg: #f3f4f6;
-        --surface: #ffffff;
-        --border: #e5e7eb;
-        --text-main: #111827;
-        --text-sub: #6b7280;
-        --radius: 12px;
+        --primary-hover: #4f46e5;
+        --primary-light: rgba(99, 102, 241, 0.08);
+        --success: #10b981;
+        --success-light: rgba(16, 185, 129, 0.08);
+        --danger: #ef4444;
+        --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+        --shadow-lg: 0 10px 25px -5px rgba(99, 102, 241, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.03);
+        --backdrop-blur: blur(20px);
+        --slider-track: #e2e8f0;
+      }
+
+      /* Dark Theme Overrides */
+      [data-theme="dark"] {
+        --bg-app: #090d16;
+        --bg-sidebar: #111827;
+        --bg-card: rgba(17, 24, 39, 0.6);
+        --bg-input: #1f2937;
+        --bg-input-disabled: #111827;
+        --border-color: rgba(255, 255, 255, 0.08);
+        --border-focus: #818cf8;
+        --text-main: #f8fafc;
+        --text-sub: #94a3b8;
+        --text-muted: #475569;
+        --primary: #818cf8;
+        --primary-hover: #6366f1;
+        --primary-light: rgba(129, 140, 248, 0.12);
+        --success: #34d399;
+        --success-light: rgba(52, 211, 153, 0.12);
+        --danger: #f87171;
+        --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
+        --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+        --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4);
+        --slider-track: #334155;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
       }
 
       body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        background-color: var(--bg);
+        background-color: var(--bg-app);
+        font-family: var(--font-sans);
         color: var(--text-main);
-        margin: 0;
-        padding: 40px 20px;
         display: flex;
         justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        overflow: hidden;
+        position: relative;
+        transition: background-color var(--transition-normal);
       }
 
-      .container {
-        max-width: 600px;
+      /* Glowing background blobs */
+      .glow-bg {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        overflow: hidden;
+        pointer-events: none;
+        z-index: 1;
+      }
+
+      .blob {
+        position: absolute;
+        width: 500px;
+        height: 500px;
+        border-radius: 50%;
+        filter: blur(100px);
+        opacity: 0.12;
+        transition: all 1s ease;
+      }
+
+      .blob-1 {
+        background: var(--primary);
+        top: -150px;
+        left: -150px;
+      }
+
+      .blob-2 {
+        background: #a855f7;
+        bottom: -150px;
+        right: -150px;
+      }
+
+      /* Desktop Window Container */
+      .app-container {
+        display: flex;
         width: 100%;
+        max-width: 960px;
+        height: 90vh;
+        max-height: 700px;
+        min-height: 550px;
+        background: var(--bg-sidebar);
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--border-color);
+        box-shadow: var(--shadow-lg);
+        overflow: hidden;
+        z-index: 10;
+        backdrop-filter: var(--backdrop-blur);
+        -webkit-backdrop-filter: var(--backdrop-blur);
+        transition: background-color var(--transition-normal), border-color var(--transition-normal);
       }
 
-      header {
-        text-align: center;
-        margin-bottom: 30px;
+      /* Left Sidebar Styles */
+      .sidebar {
+        width: 260px;
+        border-right: 1px solid var(--border-color);
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        background: rgba(255, 255, 255, 0.2);
+        padding: 32px 24px;
+        flex-shrink: 0;
+        transition: border-color var(--transition-normal);
       }
 
-      h1 {
-        font-size: 24px;
+      [data-theme="dark"] .sidebar {
+        background: rgba(17, 24, 39, 0.4);
+      }
+
+      .sidebar-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 36px;
+      }
+
+      .app-logo {
+        width: 38px;
+        height: 38px;
+        border-radius: 10px;
+        box-shadow: var(--shadow-md);
+        object-fit: cover;
+      }
+
+      .logo-title {
+        font-size: 16px;
         font-weight: 800;
-        margin: 0;
         color: var(--text-main);
+        letter-spacing: -0.02em;
+        line-height: 1.2;
       }
 
-      .subtitle {
+      .logo-subtitle {
+        font-size: 11px;
         color: var(--text-sub);
-        margin-top: 8px;
-        font-size: 14px;
+        font-weight: 500;
       }
 
-      .section-card {
-        background: var(--surface);
-        border-radius: var(--radius);
-        padding: 24px;
-        margin-bottom: 20px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        border: 1px solid rgba(0,0,0,0.05);
+      .sidebar-nav {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        flex-grow: 1;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 16px;
+        border: none;
+        background: none;
+        border-radius: var(--radius-md);
+        color: var(--text-sub);
+        font-size: 14px;
+        font-weight: 600;
+        text-align: left;
+        cursor: pointer;
+        transition: all var(--transition-fast);
+      }
+
+      .nav-item:hover {
+        background: var(--primary-light);
+        color: var(--primary);
+      }
+
+      .nav-item.active {
+        background: var(--primary);
+        color: #ffffff;
+        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.2);
+      }
+
+      .nav-icon {
+        font-size: 16px;
+      }
+
+      .sidebar-footer {
+        border-top: 1px solid var(--border-color);
+        padding-top: 20px;
+        margin-top: 20px;
+      }
+
+      .theme-toggle-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        padding: 10px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-input);
+        border-radius: var(--radius-sm);
+        color: var(--text-sub);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all var(--transition-fast);
+      }
+
+      .theme-toggle-btn:hover {
+        border-color: var(--primary);
+        color: var(--primary);
+        background: var(--primary-light);
+      }
+
+      /* Right Content Area Styles */
+      .main-content {
+        flex-grow: 1;
+        display: flex;
+        flex-direction: column;
+        background: rgba(255, 255, 255, 0.4);
+        position: relative;
+        overflow: hidden;
+      }
+
+      [data-theme="dark"] .main-content {
+        background: rgba(10, 15, 30, 0.2);
+      }
+
+      .content-body {
+        flex-grow: 1;
+        padding: 40px;
+        overflow-y: auto;
+        padding-bottom: 120px; /* Space for the sticky bottom bar */
+      }
+
+      .tab-pane {
+        display: none;
+        animation: fadeIn 0.3s ease-out;
+      }
+
+      .tab-pane.active {
+        display: block;
+      }
+
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(6px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      .section-header {
+        margin-bottom: 28px;
       }
 
       .section-title {
-        font-size: 16px;
-        font-weight: 700;
-        margin-bottom: 16px;
-        padding-bottom: 10px;
-        border-bottom: 1px solid var(--border);
+        font-size: 20px;
+        font-weight: 800;
         color: var(--text-main);
+        letter-spacing: -0.02em;
+      }
+
+      .section-desc {
+        font-size: 13px;
+        color: var(--text-sub);
+        margin-top: 6px;
+      }
+
+      /* Settings Group / Card Styles */
+      .setting-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        padding: 24px;
+        margin-bottom: 24px;
+        box-shadow: var(--shadow-sm);
+        transition: background-color var(--transition-normal), border-color var(--transition-normal);
+      }
+
+      .setting-group-title {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--text-main);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 16px;
         display: flex;
         align-items: center;
         gap: 8px;
       }
 
+      /* Custom inputs styling */
       .form-group {
-        margin-bottom: 16px;
+        margin-bottom: 20px;
+        position: relative;
+      }
+
+      .form-group:last-child {
+        margin-bottom: 0;
       }
 
       label {
         display: block;
         font-size: 13px;
         font-weight: 600;
-        margin-bottom: 6px;
-        color: #374151;
+        margin-bottom: 8px;
+        color: var(--text-main);
+      }
+
+      .input-wrapper {
+        position: relative;
+        display: flex;
+        align-items: center;
       }
 
       input[type="text"],
@@ -85,224 +351,629 @@
       input[type="number"],
       select {
         width: 100%;
-        padding: 10px 12px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
+        padding: 11px 14px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+        background-color: var(--bg-input);
+        color: var(--text-main);
         font-size: 14px;
-        transition: all 0.2s;
+        font-family: inherit;
         box-sizing: border-box;
-        background: #fff;
+        transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
       }
 
-      input:focus, select:focus {
+      input[type="text"]:focus,
+      input[type="password"]:focus,
+      input[type="number"]:focus,
+      select:focus {
         outline: none;
-        border-color: var(--primary);
-        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+        border-color: var(--border-focus);
+        box-shadow: 0 0 0 3px var(--primary-light);
       }
 
-      input:disabled {
-        background-color: #f9fafb;
-        color: #9ca3af;
+      input:disabled, select:disabled {
+        background-color: var(--bg-input-disabled);
+        color: var(--text-muted);
         cursor: not-allowed;
       }
 
-      .help {
-        font-size: 12px;
-        color: var(--text-sub);
-        margin-top: 5px;
-        line-height: 1.4;
+      /* Password Toggle Eye Button */
+      .password-toggle {
+        position: absolute;
+        right: 12px;
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: var(--text-muted);
+        font-size: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 4px;
+        transition: color var(--transition-fast);
       }
 
-      /* Save Button Area */
-      .action-area {
-        position: sticky;
-        bottom: 20px;
-        background: rgba(255, 255, 255, 0.8);
-        backdrop-filter: blur(10px);
-        padding: 15px;
-        border-radius: 16px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+      .password-toggle:hover {
+        color: var(--text-main);
+      }
+
+      .help-text {
+        font-size: 12px;
+        color: var(--text-sub);
+        margin-top: 6px;
+        line-height: 1.5;
+      }
+
+      /* Custom toggle switches styled to fit in list rows */
+      .switch-row {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        border: 1px solid rgba(255,255,255,0.5);
+        padding: 16px 0;
+        border-bottom: 1px solid var(--border-color);
+        transition: border-color var(--transition-normal);
+      }
+
+      .switch-row:first-child {
+        padding-top: 0;
+      }
+
+      .switch-row:last-child {
+        padding-bottom: 0;
+        border-bottom: none;
+      }
+
+      .switch-label-col {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding-right: 16px;
+      }
+
+      .switch-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-main);
+      }
+
+      .switch-desc {
+        font-size: 12px;
+        color: var(--text-sub);
+        line-height: 1.4;
+      }
+
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: 44px;
+        height: 24px;
+        flex-shrink: 0;
+      }
+
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+
+      .switch-slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: var(--slider-track);
+        transition: var(--transition-normal);
+        border-radius: 24px;
+      }
+
+      .switch-slider:before {
+        position: absolute;
+        content: "";
+        height: 18px;
+        width: 18px;
+        left: 3px;
+        bottom: 3px;
+        background-color: #ffffff;
+        transition: var(--transition-normal);
+        border-radius: 50%;
+        box-shadow: var(--shadow-sm);
+      }
+
+      input:checked + .switch-slider {
+        background-color: var(--primary);
+      }
+
+      input:checked + .switch-slider:before {
+        transform: translateX(20px);
+      }
+
+      /* Custom Range Sliders */
+      .slider-row {
+        padding: 18px 0;
+        border-bottom: 1px solid var(--border-color);
+      }
+
+      .slider-row:first-child {
+        padding-top: 0;
+      }
+
+      .slider-row:last-child {
+        padding-bottom: 0;
+        border-bottom: none;
+      }
+
+      .slider-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+
+      .slider-label {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-main);
+      }
+
+      .slider-value-badge {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--primary);
+        background: var(--primary-light);
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-family: monospace;
+      }
+
+      .slider-container {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .slider-limit {
+        font-size: 11px;
+        color: var(--text-muted);
+        font-family: monospace;
+        width: 12px;
+        text-align: center;
+      }
+
+      input[type="range"] {
+        flex-grow: 1;
+        -webkit-appearance: none;
+        appearance: none;
+        height: 6px;
+        border-radius: 3px;
+        background: var(--slider-track);
+        outline: none;
+        margin: 0;
+      }
+
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: var(--primary);
+        cursor: pointer;
+        border: 2px solid var(--bg-sidebar);
+        box-shadow: var(--shadow-sm);
+        transition: transform var(--transition-fast), background-color var(--transition-fast);
+      }
+
+      input[type="range"]::-webkit-slider-thumb:hover {
+        transform: scale(1.15);
+        background: var(--primary-hover);
+      }
+
+      input[type="range"]:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      /* Custom Dropdowns */
+      select {
+        appearance: none;
+        -webkit-appearance: none;
+        background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+        background-repeat: no-repeat;
+        background-position: right 14px center;
+        background-size: 14px;
+        padding-right: 40px;
+      }
+
+      [data-theme="dark"] select {
+        background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+      }
+
+      /* Two column grids */
+      .grid-2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+
+      .price-note {
+        font-size: 11px;
+        color: var(--primary);
+        font-weight: 600;
+        background: var(--primary-light);
+        padding: 4px 8px;
+        border-radius: 6px;
+        display: inline-block;
+        margin-top: 6px;
+      }
+
+      /* Floating Action Area at bottom of main content */
+      .action-area {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: rgba(255, 255, 255, 0.4);
+        backdrop-filter: var(--backdrop-blur);
+        -webkit-backdrop-filter: var(--backdrop-blur);
+        border-top: 1px solid var(--border-color);
+        padding: 20px 40px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        z-index: 100;
+        transition: background-color var(--transition-normal), border-color var(--transition-normal);
+      }
+
+      [data-theme="dark"] .action-area {
+        background: rgba(17, 24, 39, 0.4);
+      }
+
+      .status-text {
+        font-size: 13px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        transition: opacity var(--transition-fast);
       }
 
       button#saveBtn {
-        background: linear-gradient(135deg, var(--primary), #4f46e5);
-        color: white;
+        background: linear-gradient(135deg, var(--primary), var(--primary-hover));
+        color: #ffffff;
         border: none;
-        padding: 10px 24px;
-        border-radius: 8px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: transform 0.1s;
+        padding: 11px 28px;
+        border-radius: var(--radius-sm);
+        font-weight: 700;
         font-size: 14px;
+        cursor: pointer;
+        box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3);
+        transition: all var(--transition-fast);
       }
 
       button#saveBtn:hover {
-        transform: scale(1.02);
+        transform: translateY(-1px);
+        box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
       }
 
       button#saveBtn:active {
-        transform: scale(0.98);
+        transform: translateY(1px);
       }
 
-      .status {
-        font-size: 13px;
-        font-weight: 500;
-        color: var(--primary);
-      }
+      /* Responsive Styling */
+      @media (max-width: 820px) {
+        body {
+          overflow-y: auto;
+          align-items: flex-start;
+          padding: 0;
+        }
 
-      .checkbox-label {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        font-weight: 600;
-        font-size: 13px;
-        color: #374151;
-        margin-bottom: 6px;
+        .app-container {
+          flex-direction: column;
+          height: auto;
+          max-height: none;
+          min-height: 100vh;
+          border-radius: 0;
+          border: none;
+        }
+
+        .sidebar {
+          width: 100%;
+          border-right: none;
+          border-bottom: 1px solid var(--border-color);
+          padding: 24px;
+        }
+
+        .sidebar-header {
+          margin-bottom: 20px;
+        }
+
+        .sidebar-nav {
+          flex-direction: row;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .nav-item {
+          flex-grow: 1;
+          justify-content: center;
+          padding: 10px 14px;
+        }
+
+        .sidebar-footer {
+          display: none; /* Hide in mobile sidebar, or could move */
+        }
+
+        .main-content {
+          height: auto;
+          overflow: visible;
+        }
+
+        .content-body {
+          padding: 24px;
+          overflow: visible;
+          padding-bottom: 100px;
+        }
+
+        .action-area {
+          position: fixed;
+          bottom: 0;
+          padding: 16px 24px;
+        }
       }
     </style>
   </head>
   <body>
+    <!-- Glow Background elements -->
+    <div class="glow-bg">
+      <div class="blob blob-1"></div>
+      <div class="blob blob-2"></div>
+    </div>
 
-    <div class="container">
-      <header>
-        <h1>字幕上下文翻译</h1>
-        <div class="subtitle">✨ 配置你的 AI 翻译助手</div>
-      </header>
-
-      <div class="section-card">
-        <div class="section-title">🔑 API 密钥设置</div>
-        
-        <div class="form-group">
-          <label for="apiKey">ChatGPT / OpenAI API Key</label>
-          <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" />
-          <div class="help">密钥仅存储在本地，不会上传服务器。</div>
-        </div>
-
-        <div class="form-group">
-          <label for="geminiApiKey">Gemini API Key (Gemini 模型必填)</label>
-          <input type="password" id="geminiApiKey" placeholder="AIza..." autocomplete="off" />
-          <div class="help">使用 Gemini 模型时必须填写，不会回退使用上方的 OpenAI Key。</div>
-        </div>
-
-        <div class="form-group">
-          <label for="apiBaseUrl">API Base URL</label>
-          <input type="text" id="apiBaseUrl" placeholder="https://api.openai.com/v1/chat/completions" />
-          <div class="help">可填写自定义网关地址，留空则使用官方默认。</div>
-        </div>
-      </div>
-
-      <div class="section-card">
-        <div class="section-title">🧠 模型参数</div>
-
-        <div class="form-group">
-          <label for="model">选择模型</label>
-          <select id="model">
-            <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-            <option value="gpt-4o-mini">gpt-4o-mini</option>
-            <option value="gpt-4.1">gpt-4.1</option>
-            <option value="gpt-5.2">gpt-5.2</option>
-            <option value="gpt-5.1">gpt-5.1</option>
-            <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
-          </select>
-          <div class="help" id="modelNote"></div>
-        </div>
-
-        <div class="form-group">
-          <label for="temperature">创造性 / 温度 (0-1)</label>
-          <input type="number" id="temperature" min="0" max="1" step="0.1" placeholder="0.2" />
-        </div>
-
-        <div class="form-group">
-          <label for="geminiThinkingLevel">Gemini 思考深度 (仅 gemini-3-flash-preview)</label>
-          <select id="geminiThinkingLevel">
-            <option value="minimal">minimal - 最低延迟/成本</option>
-            <option value="low">low - 较低思考，快</option>
-            <option value="medium">medium - 均衡</option>
-            <option value="high">high - 深度 (默认)</option>
-          </select>
-          <div class="help">用于 Gemini 3 Flash 的 thinkingLevel，非 Gemini 模型时会自动禁用。</div>
-        </div>
-
-        <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-          <div>
-            <label for="batchSize">批处理大小</label>
-            <input type="number" id="batchSize" min="1" max="20" step="1" placeholder="8" disabled />
-          </div>
-          <div>
-            <label for="prefetchAhead">预取行数 (Context)</label>
-            <input type="number" id="prefetchAhead" min="0" max="20" step="1" placeholder="8" />
-          </div>
-          <div>
-            <label for="smoothLines">连贯缓冲行数 (M)</label>
-            <input type="number" id="smoothLines" min="0" max="20" step="1" placeholder="3" />
-            <div class="help">用于段与段交界时的译文缓冲，不能大于每段行数。</div>
+    <!-- Application window-style container -->
+    <div class="app-container">
+      
+      <!-- Sidebar Panel -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <img src="logo.png" alt="Logo" class="app-logo" />
+          <div class="logo-text">
+            <h1 class="logo-title">字幕上下文翻译</h1>
+            <span class="logo-subtitle">先锋扩展设置</span>
           </div>
         </div>
-        <div class="help">数值越大上下文越连贯，但消耗 token 也越多；预取行数设为 0 时会关闭预取与连贯缓冲。</div>
-      </div>
 
-      <div class="section-card">
-        <div class="section-title">🎨 界面显示</div>
+        <nav class="sidebar-nav">
+          <button class="nav-item active" data-tab="api-tab">
+            <span class="nav-icon">🔑</span>
+            <span class="nav-label">API 配置</span>
+          </button>
+          <button class="nav-item" data-tab="model-tab">
+            <span class="nav-icon">🧠</span>
+            <span class="nav-label">模型参数</span>
+          </button>
+          <button class="nav-item" data-tab="ui-tab">
+            <span class="nav-icon">🎨</span>
+            <span class="nav-label">界面显示</span>
+          </button>
+        </nav>
 
-        <div class="form-group" style="margin-top: 12px;">
-          <div class="checkbox-label">
-            <input type="checkbox" id="enableSourceCorrections" />
-            <span>启用原文校正提示</span>
-          </div>
-          <div class="help">模型会额外返回疑似听写错误的原文和建议校正文；校正后的词会显示为蓝色，点击蓝字可查看原文。</div>
+        <div class="sidebar-footer">
+          <button id="themeToggle" class="theme-toggle-btn">
+            <span class="theme-icon">🌓</span>
+            <span class="theme-text">切换外观</span>
+          </button>
         </div>
+      </aside>
 
-        <div class="form-group" style="margin-top: 12px;">
-          <div class="checkbox-label">
-            <input type="checkbox" id="hideTranslationTimestamp" />
-            <span>隐藏译文时间轴</span>
-          </div>
-          <div class="help">Spotify/YouTube 等站点译文行前的时间戳；原文不受影响。</div>
-        </div>
-
-        <div class="form-group" style="display: grid; grid-template-columns: 1fr 120px; gap: 15px; align-items: end; margin-top: 12px;">
-          <div>
-            <div class="checkbox-label">
-              <input type="checkbox" id="limitDisplayLines" />
-              <span>仅显示最近 N 行字幕</span>
+      <!-- Main Content Panel -->
+      <main class="main-content">
+        <div class="content-body">
+          
+          <!-- API Configuration Tab -->
+          <section id="api-tab" class="tab-pane active">
+            <div class="section-header">
+              <h2 class="section-title">API 密钥设置</h2>
+              <p class="section-desc">配置服务商 API 密钥，所有数据均本地存储，绝不上传第三方服务器。</p>
             </div>
-            <div class="help">N 为 1 时仅显示当前字幕，N 为 2 时保留上一句，最多 3 行；关闭后恢复历史列表。</div>
-          </div>
-          <div>
-            <label for="displayLineLimit">N</label>
-            <input type="number" id="displayLineLimit" min="1" max="3" step="1" placeholder="1" />
-          </div>
+
+            <div class="setting-card">
+              <div class="form-group">
+                <label for="apiKey">ChatGPT / OpenAI API Key</label>
+                <div class="input-wrapper">
+                  <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" />
+                  <button type="button" class="password-toggle" data-target="apiKey">👁️</button>
+                </div>
+                <p class="help-text">用于访问 OpenAI 兼容的翻译服务。</p>
+              </div>
+
+              <div class="form-group" style="margin-top: 20px;">
+                <label for="geminiApiKey">Gemini API Key</label>
+                <div class="input-wrapper">
+                  <input type="password" id="geminiApiKey" placeholder="AIza..." autocomplete="off" />
+                  <button type="button" class="password-toggle" data-target="geminiApiKey">👁️</button>
+                </div>
+                <p class="help-text">使用 Gemini 模型时必填。不会回退使用上方的 OpenAI Key。</p>
+              </div>
+
+              <div class="form-group" style="margin-top: 20px;">
+                <label for="apiBaseUrl">API Base URL</label>
+                <input type="text" id="apiBaseUrl" placeholder="https://api.openai.com/v1/chat/completions" />
+                <p class="help-text">可填写自定义反代或中转网关地址，留空则默认使用官方接口。</p>
+              </div>
+            </div>
+          </section>
+
+          <!-- Model Parameters Tab -->
+          <section id="model-tab" class="tab-pane">
+            <div class="section-header">
+              <h2 class="section-title">模型参数配置</h2>
+              <p class="section-desc">调整大语言模型参数，优化上下文连贯度与单次抓取行数。</p>
+            </div>
+
+            <div class="setting-card">
+              <div class="form-group">
+                <label for="model">选择大语言模型</label>
+                <select id="model">
+                  <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+                  <option value="gpt-4o-mini">gpt-4o-mini</option>
+                  <option value="gpt-4.1">gpt-4.1</option>
+                  <option value="gpt-5.2">gpt-5.2</option>
+                  <option value="gpt-5.1">gpt-5.1</option>
+                  <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+                </select>
+                <div id="modelNote" class="price-note"></div>
+              </div>
+
+              <div class="slider-row">
+                <div class="slider-header">
+                  <span class="slider-label">创造性 / 温度 (Temperature)</span>
+                  <span class="slider-value-badge" id="temperatureVal">0.2</span>
+                </div>
+                <div class="slider-container">
+                  <span class="slider-limit">0</span>
+                  <input type="range" id="temperature" min="0" max="1" step="0.1" placeholder="0.2" />
+                  <span class="slider-limit">1</span>
+                </div>
+                <p class="help-text" style="margin-top: 6px;">值越低翻译结果越稳定严谨；值越高翻译更具多样性与灵性。</p>
+              </div>
+
+              <div class="form-group" style="margin-top: 18px;">
+                <label for="geminiThinkingLevel">Gemini 思考深度 (Thinking Level)</label>
+                <select id="geminiThinkingLevel">
+                  <option value="minimal">minimal - 最低延迟/成本</option>
+                  <option value="low">low - 较低思考，快</option>
+                  <option value="medium">medium - 均衡</option>
+                  <option value="high">high - 深度 (默认)</option>
+                </select>
+                <p class="help-text">仅针对 gemini-3-flash-preview 开启思考模型，非 Gemini 模型时会自动禁用。</p>
+              </div>
+            </div>
+
+            <div class="setting-card">
+              <div class="setting-group-title">🔄 缓存与上下文控制</div>
+              
+              <!-- Hidden batchSize input to preserve JS reference compatibility -->
+              <input type="number" id="batchSize" min="1" max="20" step="1" placeholder="8" disabled style="display: none;" />
+
+              <div class="slider-row">
+                <div class="slider-header">
+                  <span class="slider-label">预取行数 / 批处理大小 (Context Size)</span>
+                  <span class="slider-value-badge" id="prefetchAheadVal">8</span>
+                </div>
+                <div class="slider-container">
+                  <span class="slider-limit">0</span>
+                  <input type="range" id="prefetchAhead" min="0" max="20" step="1" placeholder="8" />
+                  <span class="slider-limit">20</span>
+                </div>
+                <p class="help-text" style="margin-top: 6px;">单词积累达到此行数时即进行批翻译。为 0 时会彻底关闭预取与缓存。</p>
+              </div>
+
+              <div class="slider-row">
+                <div class="slider-header">
+                  <span class="slider-label">连贯缓冲行数 (Smooth Lines)</span>
+                  <span class="slider-value-badge" id="smoothLinesVal">3</span>
+                </div>
+                <div class="slider-container">
+                  <span class="slider-limit">0</span>
+                  <input type="range" id="smoothLines" min="0" max="20" step="1" placeholder="3" />
+                  <span class="slider-limit">20</span>
+                </div>
+                <p class="help-text" style="margin-top: 6px;">为避免分段翻译断层，每次翻译重叠上一批的末尾行数。不能大于“预取行数”。</p>
+              </div>
+            </div>
+          </section>
+
+          <!-- UI Display Tab -->
+          <section id="ui-tab" class="tab-pane">
+            <div class="section-header">
+              <h2 class="section-title">界面与显示效果</h2>
+              <p class="section-desc">定制网页悬浮字幕的视觉效果与交互呈现逻辑。</p>
+            </div>
+
+            <div class="setting-card">
+              <div class="switch-row">
+                <div class="switch-label-col">
+                  <span class="switch-title">启用原文校正提示</span>
+                  <span class="switch-desc">模型会额外尝试校正疑似拼写/听写错误的原文；在悬浮窗内校正词呈现蓝色，点击可看原词。</span>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="enableSourceCorrections" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+
+              <div class="switch-row">
+                <div class="switch-label-col">
+                  <span class="switch-title">隐藏译文时间轴</span>
+                  <span class="switch-desc">隐藏 Spotify/YouTube 等站点翻译悬浮窗行首的播放时间戳，只保留纯文本。</span>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="hideTranslationTimestamp" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+
+              <div class="switch-row">
+                <div class="switch-label-col">
+                  <span class="switch-title">仅显示最近 N 行字幕</span>
+                  <span class="switch-desc">开启后仅保留最新翻译的 N 行，关闭后会以历史列表形式向上滚动。</span>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="limitDisplayLines" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+
+              <!-- displayLineLimit section, styled as slider row, dependent on limitDisplayLines -->
+              <div class="slider-row" id="displayLineLimitRow">
+                <div class="slider-header">
+                  <span class="slider-label">仅显示的字幕行数 (N)</span>
+                  <span class="slider-value-badge" id="displayLineLimitVal">1</span>
+                </div>
+                <div class="slider-container">
+                  <span class="slider-limit">1</span>
+                  <input type="range" id="displayLineLimit" min="1" max="3" step="1" placeholder="1" />
+                  <span class="slider-limit">3</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-card">
+              <div class="setting-group-title">🎨 配色方案</div>
+              
+              <div class="grid-2">
+                <div class="form-group">
+                  <label for="originalColorScheme">原文颜色</label>
+                  <select id="originalColorScheme">
+                    <option value="dark">经典深色</option>
+                    <option value="green">护眼绿色</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="translationColorScheme">译文颜色</label>
+                  <select id="translationColorScheme">
+                    <option value="dark">经典深色</option>
+                    <option value="green">护眼绿色</option>
+                  </select>
+                </div>
+              </div>
+              <p class="help-text">设置将立即影响网页中字幕双语悬浮窗的配色效果。</p>
+            </div>
+          </section>
+
         </div>
 
-        <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 12px;">
-          <div>
-            <label for="originalColorScheme">原文颜色</label>
-            <select id="originalColorScheme">
-              <option value="dark">深色</option>
-              <option value="green">绿色</option>
-            </select>
-          </div>
-          <div>
-            <label for="translationColorScheme">译文颜色</label>
-            <select id="translationColorScheme">
-              <option value="dark">深色</option>
-              <option value="green">绿色</option>
-            </select>
-          </div>
-        </div>
-        <div class="help">可分别为原文 / 译文选择深色或绿色，立即影响悬浮窗的文字颜色。</div>
-      </div>
-
-      <div class="action-area">
-        <div class="status" id="status"></div>
-        <button id="saveBtn">保存设置</button>
-      </div>
+        <!-- Floating Sticky Action Area -->
+        <footer class="action-area">
+          <div class="status-text" id="status"></div>
+          <button id="saveBtn">保存全部设置</button>
+        </footer>
+      </main>
 
     </div>
+    
     <script src="options.js"></script>
   </body>
 </html>
