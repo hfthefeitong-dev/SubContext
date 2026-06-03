@@ -880,7 +880,7 @@
                   <input type="range" id="smoothLines" min="0" max="20" step="1" placeholder="3" />
                   <span class="slider-limit">20</span>
                 </div>
-                <p class="help-text" style="margin-top: 6px;">为避免分段翻译断层，每次翻译重叠上一批的末尾行数。不能大于“预取行数”。</p>
+                <p class="help-text" style="margin-top: 6px;">相邻分段翻译完成后，额外润色上一段末尾与下一段开头各 N 行，以减少段落断层。不能大于“预取行数”。</p>
               </div>
             </div>
           </section>
