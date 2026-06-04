@@ -544,10 +544,8 @@
         currentIdx,
         Math.min(currentChunkEnd, currentIdx + currentVisibleCount)
       );
-      const currentLeadingChunk = segments.slice(
-        currentChunkStart,
-        Math.min(currentIdx, Math.max(currentChunkStart, contextBackStart))
-      );
+      const currentGroupId = `${GROUP_DOM}-${currentChunkId}`;
+      const currentLeadingChunk = segments.slice(currentChunkStart, currentIdx);
       const currentTrailingChunk = segments.slice(
         Math.min(currentChunkEnd, currentIdx + currentVisibleCount),
         currentChunkEnd
@@ -562,38 +560,44 @@
       );
 
       // 当前仅立即显示 1-2 行；整段仍会预取翻译以保留上下文和顺滑度
-      enqueueChunk(currentVisibleChunk, `${GROUP_DOM}-${currentChunkId}-visible`, true, {
+      enqueueChunk(currentVisibleChunk, currentGroupId, true, {
         renderPlaceholder: true,
         chunkId: currentChunkId,
         startOrder: currentOffset,
+        deferSchedule: true,
       });
       enqueueIndexedSegmentRange(
         segments,
         contextBackStart,
-        currentIdx,
+        currentChunkStart,
         `${GROUP_DOM}-${currentChunkId}-backfill`,
         true,
-        { renderPlaceholder: true, chunkSize }
+        { renderPlaceholder: true, chunkSize, deferSchedule: true }
       );
-      enqueueChunk(currentLeadingChunk, `${GROUP_DOM}-${currentChunkId}-leading`, false, {
+      enqueueChunk(currentLeadingChunk, currentGroupId, false, {
         chunkId: currentChunkId,
         startOrder: 0,
+        deferSchedule: true,
       });
-      enqueueChunk(currentTrailingChunk, `${GROUP_DOM}-${currentChunkId}-trailing`, false, {
+      enqueueChunk(currentTrailingChunk, currentGroupId, false, {
         chunkId: currentChunkId,
         startOrder: currentOffset + currentVisibleChunk.length,
+        deferSchedule: true,
       });
       if (PREFETCH_AHEAD > 0) {
         enqueueChunk(nextChunk, `${GROUP_DOM}-${currentChunkId + 1}`, false, {
           chunkId: currentChunkId + 1,
           startOrder: 0,
+          deferSchedule: true,
         });
         // 再预取下一段，保证有一段完整译文在未播放前就准备好
         enqueueChunk(nextNextChunk, `${GROUP_DOM}-${currentChunkId + 2}`, false, {
           chunkId: currentChunkId + 2,
           startOrder: 0,
+          deferSchedule: true,
         });
       }
+      scheduleQueueProcessing();
 
       renderDueSegments(currentTime, segments); // 播放到时间戳再渲染缓存
       return;
@@ -1309,7 +1313,11 @@
     endIdx,
     groupPrefix,
     renderNow,
-    { renderPlaceholder = false, chunkSize = Math.max(1, BATCH_SIZE) } = {}
+    {
+      renderPlaceholder = false,
+      chunkSize = Math.max(1, BATCH_SIZE),
+      deferSchedule = false,
+    } = {}
   ) {
     if (!Array.isArray(segments) || startIdx >= endIdx) return;
     let idx = Math.max(0, startIdx);
@@ -1326,6 +1334,7 @@
           renderPlaceholder,
           chunkId,
           startOrder: idx - chunkStart,
+          deferSchedule,
         }
       );
       idx = sliceEnd;
@@ -1340,6 +1349,7 @@
     const placeholderText = options.renderPlaceholder
       ? options.placeholderText || PENDING_TRANSLATION_TEXT
       : "";
+    const deferSchedule = !!options.deferSchedule;
     if (chunkId !== null) {
       ensureChunkBuffer(chunkId, segments.length + startOrder);
     }
@@ -1379,7 +1389,7 @@
       }
       translationQueue.push(payload);
     });
-    scheduleQueueProcessing();
+    if (!deferSchedule) scheduleQueueProcessing();
   }
 
   function enqueueTimedSubtitleSegments(segments, currentTime, groupPrefix) {
@@ -1395,32 +1405,41 @@
       .slice(currentChunkStart, currentChunkEnd)
       .filter((seg) => isTimedSegmentActive(seg, currentTime));
     const visible = activeSegments.length ? activeSegments : [segments[currentIdx]];
+    const currentGroupId = `${groupPrefix}-${currentChunkId}`;
 
     enqueueChunk(
       visible,
-      `${groupPrefix}-${currentChunkId}-visible`,
+      currentGroupId,
       true,
       {
         renderPlaceholder: true,
         chunkId: currentChunkId,
         startOrder: Math.max(0, currentIdx - currentChunkStart),
+        deferSchedule: true,
       }
     );
 
     const currentRemainder = segments.slice(currentChunkStart, currentChunkEnd);
     enqueueChunk(
       currentRemainder,
-      `${groupPrefix}-${currentChunkId}`,
+      currentGroupId,
       false,
       {
         chunkId: currentChunkId,
         startOrder: 0,
+        deferSchedule: true,
       }
     );
 
-    if (PREFETCH_AHEAD <= 0) return;
+    if (PREFETCH_AHEAD <= 0) {
+      scheduleQueueProcessing();
+      return;
+    }
     const nextChunkId = currentChunkId + 1;
-    if (nextChunkId <= lastPrefetchedChunkId) return;
+    if (nextChunkId <= lastPrefetchedChunkId) {
+      scheduleQueueProcessing();
+      return;
+    }
     const nextStart = nextChunkId * chunkSize;
     const nextEnd = Math.min(segments.length, nextStart + chunkSize);
     enqueueChunk(
@@ -1430,9 +1449,11 @@
       {
         chunkId: nextChunkId,
         startOrder: 0,
+        deferSchedule: true,
       }
     );
     lastPrefetchedChunkId = nextChunkId;
+    scheduleQueueProcessing();
   }
 
   function findActiveTimedSegmentIndex(segments, currentTime) {
@@ -2500,6 +2521,7 @@
         translationQueue.length,
         ...translationQueue.filter((item) => item.groupId !== gid)
       );
+      batch = orderChunkBatch(batch);
     } else {
       batch = translationQueue.splice(0, effectiveBatch);
     }
@@ -2524,6 +2546,19 @@
         activeTranslations -= 1;
         processQueue();
       });
+  }
+
+  function orderChunkBatch(batch) {
+    if (!Array.isArray(batch) || batch.length < 2) return batch;
+    const canOrder = batch.every(
+      (item) =>
+        typeof item.chunkId === "number" && Number.isInteger(item.chunkOrder)
+    );
+    if (!canOrder) return batch;
+    return [...batch].sort((a, b) => {
+      if (a.chunkId !== b.chunkId) return a.chunkId - b.chunkId;
+      return a.chunkOrder - b.chunkOrder;
+    });
   }
 
   async function translateBatch(batch) {
