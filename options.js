@@ -4,7 +4,7 @@ const defaults = {
   apiBaseUrl: "https://api.openai.com/v1/chat/completions",
   model: "gpt-5.1",
   temperature: 0.2,
-  geminiThinkingLevel: "high",
+  geminiThinkingLevel: "minimal",
   batchSize: 8,
   prefetchAhead: 8,
   smoothLines: 3,
