@@ -1,9 +1,11 @@
 const DEFAULT_MODEL = "gpt-5.1";
 const DEFAULT_ENDPOINT = "https://api.openai.com/v1/chat/completions";
+const DEFAULT_DEEPSEEK_ENDPOINT = "https://api.deepseek.com/chat/completions";
 const DEFAULT_CONTEXT_LINES = 8; // user-defined "segment" length (lines)
 const DEFAULT_TEMPERATURE = 0.2;
 const DEFAULT_SMOOTH_LINES = 3;
 const DEFAULT_GEMINI_THINKING_LEVEL = "minimal";
+const DEFAULT_DEEPSEEK_THINKING_LEVEL = "high";
 const DEFAULT_REQUEST_TIMEOUT_MS = 45000;
 const DEFAULT_REQUEST_MAX_RETRIES = 1;
 const DEFAULT_REQUEST_RETRY_DELAY_MS = 1200;
@@ -125,6 +127,7 @@ async function getConfig() {
   const stored = await chrome.storage.local.get({
     apiKey: "",
     geminiApiKey: "",
+    deepseekApiKey: "",
     geminiThinkingLevel: DEFAULT_GEMINI_THINKING_LEVEL,
     apiBaseUrl: DEFAULT_ENDPOINT,
     model: DEFAULT_MODEL,
@@ -144,16 +147,22 @@ async function getConfig() {
           contextLines,
           Math.min(DEFAULT_SMOOTH_LINES, contextLines)
         );
-  const geminiThinkingLevel = normalizeGeminiThinkingLevel(
+  const model = stored.model || DEFAULT_MODEL;
+  const geminiThinkingLevel = normalizeThinkingLevelForModel(
     stored.geminiThinkingLevel,
+    model,
     DEFAULT_GEMINI_THINKING_LEVEL
   );
 
   return {
     apiKey: stored.apiKey?.trim(),
     geminiApiKey: stored.geminiApiKey?.trim(),
-    apiBaseUrl: normalizeEndpoint(stored.apiBaseUrl || DEFAULT_ENDPOINT),
-    model: stored.model || DEFAULT_MODEL,
+    deepseekApiKey: stored.deepseekApiKey?.trim(),
+    apiBaseUrl: normalizeEndpointForModel(
+      stored.apiBaseUrl || DEFAULT_ENDPOINT,
+      model
+    ),
+    model,
     temperature: clampFloat(stored.temperature, 0, 1, DEFAULT_TEMPERATURE),
     contextLines,
     smoothLines,
@@ -490,6 +499,35 @@ function normalizeEndpoint(url) {
   return stripped;
 }
 
+function normalizeEndpointForModel(url, model) {
+  if (isDeepSeekModel(model)) {
+    return normalizeDeepSeekEndpoint(url);
+  }
+  return normalizeEndpoint(url);
+}
+
+function normalizeDeepSeekEndpoint(url) {
+  const trimmed = String(url || "").trim();
+  if (!trimmed || isOpenAIDefaultEndpoint(trimmed)) {
+    return DEFAULT_DEEPSEEK_ENDPOINT;
+  }
+  const stripped = trimmed.endsWith("/")
+    ? trimmed.slice(0, trimmed.length - 1)
+    : trimmed;
+  if (stripped.endsWith("/chat/completions")) return stripped;
+  if (stripped === "https://api.deepseek.com") {
+    return `${stripped}/chat/completions`;
+  }
+  if (stripped.endsWith("/v1")) {
+    return `${stripped}/chat/completions`;
+  }
+  return stripped;
+}
+
+function isOpenAIDefaultEndpoint(url) {
+  return String(url || "").trim().replace(/\/+$/, "") === DEFAULT_ENDPOINT;
+}
+
 function buildContextMessages(contextLines, chunkContext = {}) {
   const messages = [
     {
@@ -776,6 +814,12 @@ function ensureApiKeyForModel(config = {}) {
     }
     return;
   }
+  if (isDeepSeekModel(config.model)) {
+    if (!config.deepseekApiKey) {
+      throw new Error("Missing DeepSeek API key. Set it in the extension options.");
+    }
+    return;
+  }
   if (!config.apiKey) {
     throw new Error("Missing API key. Set it in the extension options.");
   }
@@ -791,12 +835,37 @@ function isGeminiModel(model = "") {
   return (model || "").toLowerCase().includes("gemini");
 }
 
+function isDeepSeekModel(model = "") {
+  return (model || "").toLowerCase().includes("deepseek");
+}
+
 function normalizeGeminiThinkingLevel(level, fallback = "") {
   const allowed = ["minimal", "low", "medium", "high"];
   const normalized = (level || "").toLowerCase();
   if (allowed.includes(normalized)) return normalized;
   const fallbackNormalized = (fallback || "").toLowerCase();
   return allowed.includes(fallbackNormalized) ? fallbackNormalized : "";
+}
+
+function normalizeDeepSeekThinkingLevel(level, fallback = DEFAULT_DEEPSEEK_THINKING_LEVEL) {
+  const aliases = {
+    off: "disabled",
+    none: "disabled",
+    minimal: "high",
+    low: "high",
+    medium: "high",
+    xhigh: "max",
+  };
+  const normalized = aliases[(level || "").toLowerCase()] || (level || "").toLowerCase();
+  if (["disabled", "high", "max"].includes(normalized)) return normalized;
+  return fallback;
+}
+
+function normalizeThinkingLevelForModel(level, model, fallback = "") {
+  if (isDeepSeekModel(model)) {
+    return normalizeDeepSeekThinkingLevel(level);
+  }
+  return normalizeGeminiThinkingLevel(level, fallback);
 }
 
 async function sendGeminiRequest({
@@ -887,6 +956,10 @@ async function sendOpenAIRequest({
   requestLabel = "Translation request",
   missingMessage = "Translation missing in API response.",
 }) {
+  const apiKey = isDeepSeekModel(config.model)
+    ? config.deepseekApiKey
+    : config.apiKey;
+  const requestPayload = prepareOpenAICompatiblePayload(config, payload);
   return runWithRetries(
     async () => {
       const response = await fetchWithTimeout(
@@ -895,9 +968,9 @@ async function sendOpenAIRequest({
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${config.apiKey}`,
+            Authorization: `Bearer ${apiKey}`,
           },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(requestPayload),
         },
         DEFAULT_REQUEST_TIMEOUT_MS
       );
@@ -920,6 +993,28 @@ async function sendOpenAIRequest({
     },
     { label: requestLabel }
   );
+}
+
+function prepareOpenAICompatiblePayload(config, payload) {
+  if (!isDeepSeekModel(config.model)) {
+    return payload;
+  }
+
+  const thinkingLevel = normalizeDeepSeekThinkingLevel(config.geminiThinkingLevel);
+  const nextPayload = {
+    ...payload,
+    thinking: {
+      type: thinkingLevel === "disabled" ? "disabled" : "enabled",
+    },
+  };
+
+  if (thinkingLevel === "disabled") {
+    return nextPayload;
+  }
+
+  nextPayload.reasoning_effort = thinkingLevel;
+  delete nextPayload.temperature;
+  return nextPayload;
 }
 
 function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {

@@ -798,6 +798,15 @@
               </div>
 
               <div class="form-group" style="margin-top: 20px;">
+                <label for="deepseekApiKey">DeepSeek API Key</label>
+                <div class="input-wrapper">
+                  <input type="password" id="deepseekApiKey" placeholder="sk-..." autocomplete="off" />
+                  <button type="button" class="password-toggle" data-target="deepseekApiKey">👁️</button>
+                </div>
+                <p class="help-text">使用 DeepSeek 模型时必填。会自动使用 DeepSeek 官方 OpenAI 兼容接口。</p>
+              </div>
+
+              <div class="form-group" style="margin-top: 20px;">
                 <label for="apiBaseUrl">API Base URL</label>
                 <input type="text" id="apiBaseUrl" placeholder="https://api.openai.com/v1/chat/completions" />
                 <p class="help-text">可填写自定义反代或中转网关地址，留空则默认使用官方接口。</p>
@@ -822,6 +831,8 @@
                   <option value="gpt-5.2">gpt-5.2</option>
                   <option value="gpt-5.1">gpt-5.1</option>
                   <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+                  <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+                  <option value="deepseek-v4-pro">deepseek-v4-pro</option>
                 </select>
                 <div id="modelNote" class="price-note"></div>
               </div>
@@ -840,14 +851,14 @@
               </div>
 
               <div class="form-group" style="margin-top: 18px;">
-                <label for="geminiThinkingLevel">Gemini 思考深度 (Thinking Level)</label>
+                <label for="geminiThinkingLevel" id="thinkingLevelLabel">Gemini 思考深度 (Thinking Level)</label>
                 <select id="geminiThinkingLevel">
                   <option value="minimal">minimal - 最低延迟/成本 (默认)</option>
                   <option value="low">low - 较低思考，快</option>
                   <option value="medium">medium - 均衡</option>
                   <option value="high">high - 深度</option>
                 </select>
-                <p class="help-text">仅针对 gemini-3-flash-preview 开启思考模型，非 Gemini 模型时会自动禁用。</p>
+                <p class="help-text" id="thinkingLevelHelp">仅针对 gemini-3-flash-preview 开启思考模型，非 Gemini 模型时会自动禁用。</p>
               </div>
             </div>
 

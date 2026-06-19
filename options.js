@@ -1,6 +1,7 @@
 const defaults = {
   apiKey: "",
   geminiApiKey: "",
+  deepseekApiKey: "",
   apiBaseUrl: "https://api.openai.com/v1/chat/completions",
   model: "gpt-5.1",
   temperature: 0.2,
@@ -19,10 +20,13 @@ const defaults = {
 
 const apiKeyInput = document.getElementById("apiKey");
 const geminiApiKeyInput = document.getElementById("geminiApiKey");
+const deepseekApiKeyInput = document.getElementById("deepseekApiKey");
 const apiBaseInput = document.getElementById("apiBaseUrl");
 const modelInput = document.getElementById("model");
 const temperatureInput = document.getElementById("temperature");
 const geminiThinkingLevelSelect = document.getElementById("geminiThinkingLevel");
+const thinkingLevelLabel = document.getElementById("thinkingLevelLabel");
+const thinkingLevelHelp = document.getElementById("thinkingLevelHelp");
 const batchSizeInput = document.getElementById("batchSize");
 const prefetchAheadInput = document.getElementById("prefetchAhead");
 const smoothLinesInput = document.getElementById("smoothLines");
@@ -44,7 +48,22 @@ const MODEL_PRICE = {
   "gpt-5.2": "TBD",
   "gpt-5.1": "$1.25 / 1M",
   "gemini-3-flash-preview": "in: $0.50 / out: $3 per 1M",
+  "deepseek-v4-flash": "in: $0.14 / out: $0.28 per 1M",
+  "deepseek-v4-pro": "in: $0.435 / out: $0.87 per 1M",
 };
+
+const GEMINI_THINKING_OPTIONS = [
+  ["minimal", "minimal - 最低延迟/成本 (默认)"],
+  ["low", "low - 较低思考，快"],
+  ["medium", "medium - 均衡"],
+  ["high", "high - 深度"],
+];
+
+const DEEPSEEK_THINKING_OPTIONS = [
+  ["disabled", "disabled - 关闭思考模式"],
+  ["high", "high - 标准思考 (默认)"],
+  ["max", "max - 最高思考强度"],
+];
 
 let currentTheme = "auto";
 
@@ -58,16 +77,14 @@ async function init() {
 
   apiKeyInput.value = stored.apiKey || "";
   geminiApiKeyInput.value = stored.geminiApiKey || "";
+  deepseekApiKeyInput.value = stored.deepseekApiKey || "";
   apiBaseInput.value = stored.apiBaseUrl || defaults.apiBaseUrl;
   modelInput.value = stored.model || defaults.model;
+  syncApiBaseUrlForModel();
   temperatureInput.value = stored.temperature ?? defaults.temperature;
-  geminiThinkingLevelSelect.value = normalizeGeminiThinkingLevel(
-    stored.geminiThinkingLevel,
-    defaults.geminiThinkingLevel
-  );
   
   syncTemperatureLock();
-  syncGeminiThinkingLock();
+  syncThinkingLevelControl(stored.geminiThinkingLevel);
   updateModelNote();
   
   const prefetch = stored.prefetchAhead ?? defaults.prefetchAhead;
@@ -186,8 +203,9 @@ function applyTheme(theme) {
 }
 
 modelInput.addEventListener("change", () => {
+  syncApiBaseUrlForModel();
   syncTemperatureLock();
-  syncGeminiThinkingLock();
+  syncThinkingLevelControl(geminiThinkingLevelSelect.value);
   updateModelNote();
 });
 
@@ -215,12 +233,14 @@ displayLineLimitInput.addEventListener("input", () => {
 saveBtn.addEventListener("click", async () => {
   const apiKey = apiKeyInput.value.trim();
   const geminiApiKey = geminiApiKeyInput.value.trim();
+  const deepseekApiKey = deepseekApiKeyInput.value.trim();
   const apiBaseUrl = apiBaseInput.value.trim() || defaults.apiBaseUrl;
   const model = modelInput.value.trim() || defaults.model;
   const temperature = clampFloat(temperatureInput.value, 0, 1, defaults.temperature);
   const finalTemperature = temperature;
-  const geminiThinkingLevel = normalizeGeminiThinkingLevel(
+  const geminiThinkingLevel = normalizeThinkingLevelForModel(
     geminiThinkingLevelSelect.value,
+    model,
     defaults.geminiThinkingLevel
   );
   const prefetchAhead = clampInt(prefetchAheadInput.value, 0, 20, defaults.prefetchAhead);
@@ -253,11 +273,18 @@ saveBtn.addEventListener("click", async () => {
     return;
   }
 
+  if (isDeepSeekModel(model) && !deepseekApiKey) {
+    statusEl.textContent = "⚠️ 使用 DeepSeek 模型时必须填写 DeepSeek API Key。";
+    statusEl.style.color = "var(--danger)";
+    return;
+  }
+
   await chrome.storage.local.set({
     apiKey,
     apiBaseUrl,
     model,
     geminiApiKey,
+    deepseekApiKey,
     temperature: finalTemperature,
     geminiThinkingLevel,
     batchSize,
@@ -339,10 +366,71 @@ function syncTemperatureLock() {
   temperatureInput.disabled = false;
 }
 
-function syncGeminiThinkingLock() {
+function syncThinkingLevelControl(preferredValue) {
   if (!geminiThinkingLevelSelect) return;
   const isGemini = isGeminiModel(modelInput.value);
-  geminiThinkingLevelSelect.disabled = !isGemini;
+  const isDeepSeek = isDeepSeekModel(modelInput.value);
+
+  if (isGemini) {
+    setThinkingOptions(GEMINI_THINKING_OPTIONS);
+    geminiThinkingLevelSelect.value = normalizeGeminiThinkingLevel(
+      preferredValue,
+      defaults.geminiThinkingLevel
+    );
+    geminiThinkingLevelSelect.disabled = false;
+    if (thinkingLevelLabel) {
+      thinkingLevelLabel.textContent = "Gemini 思考深度 (Thinking Level)";
+    }
+    if (thinkingLevelHelp) {
+      thinkingLevelHelp.textContent =
+        "仅针对 gemini-3-flash-preview 开启思考模型，非 Gemini 模型时会自动禁用。";
+    }
+    return;
+  }
+
+  if (isDeepSeek) {
+    setThinkingOptions(DEEPSEEK_THINKING_OPTIONS);
+    geminiThinkingLevelSelect.value = normalizeDeepSeekThinkingLevel(
+      preferredValue,
+      "high"
+    );
+    geminiThinkingLevelSelect.disabled = false;
+    if (thinkingLevelLabel) {
+      thinkingLevelLabel.textContent = "DeepSeek 思考深度 (Thinking Mode)";
+    }
+    if (thinkingLevelHelp) {
+      thinkingLevelHelp.textContent =
+        "DeepSeek 默认开启思考模式；high 为标准强度，max 为最高强度，disabled 会关闭思考。";
+    }
+    return;
+  }
+
+  setThinkingOptions(GEMINI_THINKING_OPTIONS);
+  geminiThinkingLevelSelect.value = defaults.geminiThinkingLevel;
+  geminiThinkingLevelSelect.disabled = true;
+  if (thinkingLevelLabel) {
+    thinkingLevelLabel.textContent = "思考深度 (Thinking Level)";
+  }
+  if (thinkingLevelHelp) {
+    thinkingLevelHelp.textContent =
+      "仅 Gemini 与 DeepSeek 模型支持此设置，其他模型会自动禁用。";
+  }
+}
+
+function setThinkingOptions(options) {
+  const currentOptions = Array.from(geminiThinkingLevelSelect.options).map(
+    (option) => `${option.value}:${option.textContent}`
+  );
+  const nextOptions = options.map(([value, label]) => `${value}:${label}`);
+  if (currentOptions.join("|") === nextOptions.join("|")) return;
+  geminiThinkingLevelSelect.replaceChildren(
+    ...options.map(([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      return option;
+    })
+  );
 }
 
 function updateModelNote() {
@@ -351,12 +439,60 @@ function updateModelNote() {
   modelNoteEl.textContent = price ? `费用：${price}` : "";
 }
 
+function syncApiBaseUrlForModel() {
+  if (!apiBaseInput) return;
+  const current = (apiBaseInput.value || "").trim();
+  const nextDefault = isDeepSeekModel(modelInput.value)
+    ? "https://api.deepseek.com/chat/completions"
+    : defaults.apiBaseUrl;
+  if (!current || isKnownProviderEndpoint(current)) {
+    apiBaseInput.value = nextDefault;
+  }
+  apiBaseInput.placeholder = nextDefault;
+}
+
 function normalizeGeminiThinkingLevel(value, fallback) {
   const allowed = ["minimal", "low", "medium", "high"];
   const lower = (value || "").toLowerCase();
   return allowed.includes(lower) ? lower : fallback;
 }
 
+function normalizeDeepSeekThinkingLevel(value, fallback) {
+  const aliases = {
+    off: "disabled",
+    none: "disabled",
+    minimal: "high",
+    low: "high",
+    medium: "high",
+    xhigh: "max",
+  };
+  const lower = (value || "").toLowerCase();
+  const normalized = aliases[lower] || lower;
+  return ["disabled", "high", "max"].includes(normalized)
+    ? normalized
+    : fallback;
+}
+
+function normalizeThinkingLevelForModel(value, model, fallback) {
+  if (isDeepSeekModel(model)) {
+    return normalizeDeepSeekThinkingLevel(value, "high");
+  }
+  return normalizeGeminiThinkingLevel(value, fallback);
+}
+
 function isGeminiModel(model = "") {
   return (model || "").toLowerCase().includes("gemini");
+}
+
+function isDeepSeekModel(model = "") {
+  return (model || "").toLowerCase().includes("deepseek");
+}
+
+function isKnownProviderEndpoint(url = "") {
+  const normalized = String(url || "").trim().replace(/\/+$/, "");
+  return [
+    "https://api.openai.com/v1/chat/completions",
+    "https://api.deepseek.com/chat/completions",
+    "https://api.deepseek.com/v1/chat/completions",
+  ].includes(normalized);
 }

@@ -958,6 +958,8 @@
     if (
       changes.apiKey ||
       changes.geminiApiKey ||
+      changes.deepseekApiKey ||
+      changes.geminiThinkingLevel ||
       changes.apiBaseUrl ||
       changes.model
     ) {
