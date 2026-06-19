@@ -90,4 +90,4 @@ node --check options.js
 
 ## License
 
-暂未指定许可证。发布到公开仓库前建议补充一个明确的开源许可证。
+本项目基于 [MIT License](LICENSE) 开源。
