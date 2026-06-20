@@ -116,6 +116,7 @@
   const hookedTimeVideos = new WeakSet();
   const lastVideoTimeByVideo = new WeakMap();
   const spotifyCueRefreshTimers = new WeakMap();
+  const spotifyCueRefreshTimes = new WeakMap();
   const EXT_INACTIVE_ERROR = "Extension inactive";
 
   const isYouTubeSite = () =>
@@ -765,11 +766,13 @@
     if (!overlayEnabled) return;
     const videos = getAllVideos();
     videos.forEach((video) => {
-      if (hookedVideos.has(video)) return;
-      hookedVideos.add(video);
-      lastVideoTimeByVideo.set(video, video?.currentTime);
+      const isNewVideo = !hookedVideos.has(video);
+      if (isNewVideo) {
+        hookedVideos.add(video);
+        lastVideoTimeByVideo.set(video, video?.currentTime);
+      }
 
-      if (!hookedTimeVideos.has(video)) {
+      if (isNewVideo && !hookedTimeVideos.has(video)) {
         hookedTimeVideos.add(video);
         video.addEventListener("timeupdate", () => {
           if (!overlayEnabled) return;
@@ -781,6 +784,9 @@
           }
           if (isZdfSite()) {
             handleZdfTimedPlayback(video, t);
+          }
+          if (isSpotifySite()) {
+            requestSpotifyCueRefresh(video, 350);
           }
         });
         video.addEventListener("seeking", () => {
@@ -819,10 +825,11 @@
       }
 
       const registerTrack = (track) => {
-        if (!track || hookedTracks.has(track)) return;
+        if (!track) return;
         if (!isTranslatableTextTrack(track)) return;
-        hookedTracks.add(track);
         track.mode = "hidden"; // allow JS access
+        if (hookedTracks.has(track)) return;
+        hookedTracks.add(track);
         track.addEventListener("cuechange", () => handleCueChange(track, video));
       };
 
@@ -830,20 +837,28 @@
       for (let i = 0; i < tracks.length; i += 1) {
         registerTrack(tracks[i]);
       }
-      video.addEventListener("loadedmetadata", () => {
-        const updatedTracks = video.textTracks || [];
-        for (let i = 0; i < updatedTracks.length; i += 1) {
-          registerTrack(updatedTracks[i]);
-        }
-      });
-      if (video.textTracks?.addEventListener) {
-        video.textTracks.addEventListener("addtrack", (e) => {
-          const track = e.track;
-          registerTrack(track);
-          if (track?.cues?.length) {
-            handleCueChange(track, video); // immediately process if cues already loaded
+      if (isSpotifySite()) {
+        requestSpotifyCueRefresh(video, isNewVideo ? 0 : 350);
+      }
+      if (isNewVideo) {
+        video.addEventListener("loadedmetadata", () => {
+          const updatedTracks = video.textTracks || [];
+          for (let i = 0; i < updatedTracks.length; i += 1) {
+            registerTrack(updatedTracks[i]);
+          }
+          if (isSpotifySite()) {
+            requestSpotifyCueRefresh(video, 0);
           }
         });
+        if (video.textTracks?.addEventListener) {
+          video.textTracks.addEventListener("addtrack", (e) => {
+            const track = e.track;
+            registerTrack(track);
+            if (track?.cues?.length) {
+              handleCueChange(track, video); // immediately process if cues already loaded
+            }
+          });
+        }
       }
     });
   }
@@ -1100,6 +1115,15 @@
       const seg = cueToSegment(cue);
       if (seg?.id) activeIds.add(seg.id);
     }
+    if (validateCueTime && !currentActiveCues.length && allCues.length) {
+      for (let i = 0; i < allCues.length; i += 1) {
+        const cue = allCues[i];
+        if (!isCueActiveAtTime(cue, videoTime)) continue;
+        currentActiveCues.push(cue);
+        const seg = cueToSegment(cue);
+        if (seg?.id) activeIds.add(seg.id);
+      }
+    }
 
     // prefetch next segment (user-defined number of lines) to keep exactly one segment cached
     if (allCues.length && currentActiveCues.length) {
@@ -1193,6 +1217,15 @@
       }
     }
     scheduleQueueProcessing();
+  }
+
+  function requestSpotifyCueRefresh(video, minIntervalMs = 0) {
+    if (!video) return;
+    const now = Date.now();
+    const last = spotifyCueRefreshTimes.get(video) || 0;
+    if (minIntervalMs > 0 && now - last < minIntervalMs) return;
+    spotifyCueRefreshTimes.set(video, now);
+    scheduleSpotifyCueRefresh(video, 0);
   }
 
   function scheduleSpotifyCueRefresh(video, delayMs = 0) {
