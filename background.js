@@ -862,10 +862,19 @@ function normalizeDeepSeekThinkingLevel(level, fallback = DEFAULT_DEEPSEEK_THINK
 }
 
 function normalizeThinkingLevelForModel(level, model, fallback = "") {
+  if (model === "gpt-6-luna") {
+    return normalizeLunaThinkingLevel(level);
+  }
   if (isDeepSeekModel(model)) {
     return normalizeDeepSeekThinkingLevel(level);
   }
   return normalizeGeminiThinkingLevel(level, fallback);
+}
+
+function normalizeLunaThinkingLevel(level) {
+  return ["none", "low", "medium", "high", "xhigh", "max"].includes(level)
+    ? level
+    : "none";
 }
 
 async function sendGeminiRequest({
@@ -996,6 +1005,14 @@ async function sendOpenAIRequest({
 }
 
 function prepareOpenAICompatiblePayload(config, payload) {
+  if (config.model === "gpt-6-luna") {
+    const thinkingLevel = normalizeLunaThinkingLevel(config.geminiThinkingLevel);
+    const nextPayload = { ...payload, reasoning_effort: thinkingLevel };
+    // 开启思考时 temperature 不受支持；none 保留用户的温度设置。
+    // https://developers.openai.com/api/docs/guides/latest-model#gpt-6-astra-update-api-and-model-parameters
+    if (thinkingLevel !== "none") delete nextPayload.temperature;
+    return nextPayload;
+  }
   if (!isDeepSeekModel(config.model)) {
     return payload;
   }

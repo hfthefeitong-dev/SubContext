@@ -11,6 +11,7 @@ const defaults = {
   smoothLines: 3,
   enableSourceCorrections: false,
   hideTranslationTimestamp: false,
+  autoHideToolbar: false,
   limitDisplayLines: false,
   displayLineLimit: 1,
   originalColorScheme: "dark",
@@ -27,11 +28,13 @@ const temperatureInput = document.getElementById("temperature");
 const geminiThinkingLevelSelect = document.getElementById("geminiThinkingLevel");
 const thinkingLevelLabel = document.getElementById("thinkingLevelLabel");
 const thinkingLevelHelp = document.getElementById("thinkingLevelHelp");
+const temperatureHelp = document.getElementById("temperatureHelp");
 const batchSizeInput = document.getElementById("batchSize");
 const prefetchAheadInput = document.getElementById("prefetchAhead");
 const smoothLinesInput = document.getElementById("smoothLines");
 const enableSourceCorrectionsInput = document.getElementById("enableSourceCorrections");
 const hideTranslationTimestampInput = document.getElementById("hideTranslationTimestamp");
+const autoHideToolbarInput = document.getElementById("autoHideToolbar");
 const limitDisplayLinesInput = document.getElementById("limitDisplayLines");
 const displayLineLimitInput = document.getElementById("displayLineLimit");
 const originalColorSelect = document.getElementById("originalColorScheme");
@@ -42,9 +45,8 @@ const saveBtn = document.getElementById("saveBtn");
 const themeToggleBtn = document.getElementById("themeToggle");
 
 const MODEL_PRICE = {
-  "gpt-4.1-mini": "$0.4 / 1M",
-  "gpt-4o-mini": "$0.15 / 1M",
-  "gpt-4.1": "$2 / 1M",
+  "gpt-6-luna": "输入 $0.10 / 输出 $0.50，每 1M tokens（官方标准价，输入不超过 272K；实际以所用接口为准）",
+  "gpt-5.6-luna": "待确认（以所用接口为准）",
   "gpt-5.2": "TBD",
   "gpt-5.1": "$1.25 / 1M",
   "gemini-3-flash-preview": "in: $0.50 / out: $3 per 1M",
@@ -57,6 +59,15 @@ const GEMINI_THINKING_OPTIONS = [
   ["low", "low - 较低思考，快"],
   ["medium", "medium - 均衡"],
   ["high", "high - 深度"],
+];
+
+const LUNA_THINKING_OPTIONS = [
+  ["none", "none - 不启用思考 (扩展默认)"],
+  ["low", "low - 低"],
+  ["medium", "medium - 中 (API 默认)"],
+  ["high", "high - 高"],
+  ["xhigh", "xhigh - 更高"],
+  ["max", "max - 最高"],
 ];
 
 const DEEPSEEK_THINKING_OPTIONS = [
@@ -83,8 +94,8 @@ async function init() {
   syncApiBaseUrlForModel();
   temperatureInput.value = stored.temperature ?? defaults.temperature;
   
-  syncTemperatureLock();
   syncThinkingLevelControl(stored.geminiThinkingLevel);
+  syncTemperatureLock();
   updateModelNote();
   
   const prefetch = stored.prefetchAhead ?? defaults.prefetchAhead;
@@ -99,6 +110,7 @@ async function init() {
     !!(stored.enableSourceCorrections ?? defaults.enableSourceCorrections);
   hideTranslationTimestampInput.checked =
     !!(stored.hideTranslationTimestamp ?? defaults.hideTranslationTimestamp);
+  autoHideToolbarInput.checked = !!stored.autoHideToolbar;
   limitDisplayLinesInput.checked =
     !!(stored.limitDisplayLines ?? defaults.limitDisplayLines);
   
@@ -204,10 +216,12 @@ function applyTheme(theme) {
 
 modelInput.addEventListener("change", () => {
   syncApiBaseUrlForModel();
-  syncTemperatureLock();
   syncThinkingLevelControl(geminiThinkingLevelSelect.value);
+  syncTemperatureLock();
   updateModelNote();
 });
+
+geminiThinkingLevelSelect.addEventListener("change", syncTemperatureLock);
 
 temperatureInput.addEventListener("input", () => {
   const tempValEl = document.getElementById("temperatureVal");
@@ -256,6 +270,7 @@ saveBtn.addEventListener("click", async () => {
         );
   const enableSourceCorrections = !!enableSourceCorrectionsInput.checked;
   const hideTranslationTimestamp = !!hideTranslationTimestampInput.checked;
+  const autoHideToolbar = autoHideToolbarInput.checked;
   const limitDisplayLines = !!limitDisplayLinesInput.checked;
   const displayLineLimit = clampInt(
     displayLineLimitInput.value,
@@ -292,6 +307,7 @@ saveBtn.addEventListener("click", async () => {
     smoothLines,
     enableSourceCorrections,
     hideTranslationTimestamp,
+    autoHideToolbar,
     limitDisplayLines,
     displayLineLimit,
     originalColorScheme,
@@ -363,13 +379,28 @@ function syncDisplayLineLimitControl() {
 }
 
 function syncTemperatureLock() {
-  temperatureInput.disabled = false;
+  const lunaReasoningEnabled =
+    modelInput.value === "gpt-6-luna" && geminiThinkingLevelSelect.value !== "none";
+  temperatureInput.disabled = lunaReasoningEnabled;
+  temperatureHelp.textContent = lunaReasoningEnabled
+    ? "GPT-6 Luna 开启思考时不支持温度设置，请求中将不发送此参数；选择 none 后可调整温度。"
+    : "值越低翻译结果越稳定严谨；值越高翻译更具多样性与灵性。";
 }
 
 function syncThinkingLevelControl(preferredValue) {
   if (!geminiThinkingLevelSelect) return;
   const isGemini = isGeminiModel(modelInput.value);
   const isDeepSeek = isDeepSeekModel(modelInput.value);
+
+  if (modelInput.value === "gpt-6-luna") {
+    setThinkingOptions(LUNA_THINKING_OPTIONS);
+    geminiThinkingLevelSelect.value = normalizeLunaThinkingLevel(preferredValue);
+    geminiThinkingLevelSelect.disabled = false;
+    thinkingLevelLabel.textContent = "GPT-6 Luna 思考强度 (Reasoning Effort)";
+    thinkingLevelHelp.textContent =
+      "none 不启用思考；low、medium、high、xhigh、max 依次提高思考强度。扩展默认使用 none；开启思考后温度设置将禁用。";
+    return;
+  }
 
   if (isGemini) {
     setThinkingOptions(GEMINI_THINKING_OPTIONS);
@@ -413,7 +444,7 @@ function syncThinkingLevelControl(preferredValue) {
   }
   if (thinkingLevelHelp) {
     thinkingLevelHelp.textContent =
-      "仅 Gemini 与 DeepSeek 模型支持此设置，其他模型会自动禁用。";
+      "选择 GPT-6 Luna、Gemini 或 DeepSeek 模型时可调整思考强度。";
   }
 }
 
@@ -474,10 +505,17 @@ function normalizeDeepSeekThinkingLevel(value, fallback) {
 }
 
 function normalizeThinkingLevelForModel(value, model, fallback) {
+  if (model === "gpt-6-luna") {
+    return normalizeLunaThinkingLevel(value);
+  }
   if (isDeepSeekModel(model)) {
     return normalizeDeepSeekThinkingLevel(value, "high");
   }
   return normalizeGeminiThinkingLevel(value, fallback);
+}
+
+function normalizeLunaThinkingLevel(value) {
+  return LUNA_THINKING_OPTIONS.some(([level]) => level === value) ? value : "none";
 }
 
 function isGeminiModel(model = "") {

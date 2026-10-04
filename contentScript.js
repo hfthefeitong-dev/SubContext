@@ -72,6 +72,7 @@
   const DEFAULT_ORIGINAL_COLOR_SCHEME = "dark";
   const DEFAULT_TRANSLATION_COLOR_SCHEME = "dark";
   const DEFAULT_HIDE_TRANSLATION_TIMESTAMP = false;
+  const DEFAULT_AUTO_HIDE_TOOLBAR = false;
   const DEFAULT_SHOW_TRANSLATION = true;
   const DEFAULT_LIMIT_DISPLAY_LINES = false;
   const DEFAULT_DISPLAY_LINE_LIMIT = 1;
@@ -106,6 +107,7 @@
   let ORIGINAL_COLOR_SCHEME = DEFAULT_ORIGINAL_COLOR_SCHEME;
   let TRANSLATION_COLOR_SCHEME = DEFAULT_TRANSLATION_COLOR_SCHEME;
   let HIDE_TRANSLATION_TIMESTAMP = DEFAULT_HIDE_TRANSLATION_TIMESTAMP;
+  let AUTO_HIDE_TOOLBAR = DEFAULT_AUTO_HIDE_TOOLBAR;
   let SHOW_TRANSLATION = DEFAULT_SHOW_TRANSLATION;
   let LIMIT_DISPLAY_LINES = DEFAULT_LIMIT_DISPLAY_LINES;
   let DISPLAY_LINE_LIMIT = DEFAULT_DISPLAY_LINE_LIMIT;
@@ -895,6 +897,7 @@
         fontTranslation: DEFAULT_FONT_TRANSLATION,
         enableSourceCorrections: DEFAULT_ENABLE_SOURCE_CORRECTIONS,
         hideTranslationTimestamp: DEFAULT_HIDE_TRANSLATION_TIMESTAMP,
+        autoHideToolbar: DEFAULT_AUTO_HIDE_TOOLBAR,
         showTranslation: DEFAULT_SHOW_TRANSLATION,
         limitDisplayLines: DEFAULT_LIMIT_DISPLAY_LINES,
         displayLineLimit: DEFAULT_DISPLAY_LINE_LIMIT,
@@ -945,6 +948,7 @@
         );
         ENABLE_SOURCE_CORRECTIONS = !!res.enableSourceCorrections;
         HIDE_TRANSLATION_TIMESTAMP = !!res.hideTranslationTimestamp;
+        AUTO_HIDE_TOOLBAR = !!res.autoHideToolbar;
         SHOW_TRANSLATION = res.showTranslation !== false;
         LIMIT_DISPLAY_LINES = !!res.limitDisplayLines;
         DISPLAY_LINE_LIMIT = clampInt(
@@ -962,6 +966,7 @@
         overlay.style.width = `${PANEL_WIDTH_VW}vw`;
         overlay.style.maxWidth = `${PANEL_WIDTH_VW}vw`;
         applyTranslationVisibility();
+        applyToolbarAutoHide();
         applyDisplayLimitMode();
         applyFontSizes();
       }
@@ -1064,6 +1069,10 @@
         const cached = translationCache.get(id) || translationEl.textContent || "";
         translationEl.textContent = formatTranslationForDisplay(cached, false);
       });
+    }
+    if (changes.autoHideToolbar) {
+      AUTO_HIDE_TOOLBAR = !!changes.autoHideToolbar.newValue;
+      applyToolbarAutoHide();
     }
     if (changes.showTranslation) {
       SHOW_TRANSLATION = changes.showTranslation.newValue !== false;
@@ -3089,6 +3098,12 @@
     fitLimitedOverlayToViewport();
   }
 
+  function applyToolbarAutoHide() {
+    if (!overlay) return;
+    overlay.classList.toggle("spt-auto-hide-toolbar", AUTO_HIDE_TOOLBAR);
+    fitLimitedOverlayToViewport();
+  }
+
   function applyDisplayLimitMode() {
     if (!overlay) return;
     overlay.classList.toggle("spt-limit-display", !!LIMIT_DISPLAY_LINES);
@@ -3160,7 +3175,7 @@
         ? status.getBoundingClientRect().height
         : 0;
     const total =
-      (header?.getBoundingClientRect().height || 0) +
+      (AUTO_HIDE_TOOLBAR ? 0 : header?.getBoundingClientRect().height || 0) +
       statusHeight +
       listHeight +
       borderTop +
@@ -3512,7 +3527,9 @@
     container.style.maxHeight = `${PANEL_HEIGHT_VH}vh`;
     container.style.width = `${PANEL_WIDTH_VW}vw`;
     container.innerHTML = `
-      <div class="spt-header">
+      <div class="spt-toolbar">
+        <div class="spt-toolbar-trigger" tabindex="0" role="group" aria-label="显示字幕工具栏"></div>
+        <div class="spt-header">
         <span class="spt-title">字幕上下文翻译</span>
         <div class="spt-actions">
           <button class="spt-toggle-translation" title="关闭译文" aria-label="关闭译文" aria-pressed="false">
@@ -3527,6 +3544,7 @@
             <span class="spt-icon">⚙</span>
           </button>
           <button class="spt-close" title="关闭悬浮窗">×</button>
+        </div>
         </div>
       </div>
       <div class="spt-status">等待捕获字幕… 请确保播放器打开了 Transcript.</div>
@@ -3557,6 +3575,7 @@
     style.textContent = `
       /* 容器：毛玻璃 + 圆润设计 */
       .spt-overlay {
+        --spt-panel-radius: 20px;
         position: fixed;
         right: 20px;
         bottom: 20px;
@@ -3568,7 +3587,7 @@
         -webkit-backdrop-filter: blur(20px) saturate(180%);
         color: #1f2937;
         border: 1px solid rgba(255, 255, 255, 0.6);
-        border-radius: 20px;
+        border-radius: var(--spt-panel-radius);
         /* 阴影更加弥散，高级感 */
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0,0,0,0.05);
         z-index: 99999;
@@ -3577,6 +3596,79 @@
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         overflow: hidden;
         transition: opacity 0.2s, transform 0.2s;
+      }
+
+      .spt-toolbar {
+        flex: 0 0 auto;
+      }
+
+      .spt-toolbar-trigger {
+        display: none;
+      }
+
+      /* 自动隐藏时仅顶部热区触发，工具栏脱离字幕布局。 */
+      .spt-overlay.spt-auto-hide-toolbar {
+        overflow: visible;
+      }
+
+      .spt-auto-hide-toolbar .spt-items {
+        border-radius: inherit;
+      }
+
+      .spt-auto-hide-toolbar .spt-status {
+        border-radius: calc(var(--spt-panel-radius) - 1px) calc(var(--spt-panel-radius) - 1px) 0 0;
+      }
+
+      .spt-auto-hide-toolbar .spt-toolbar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 18px;
+        border-radius: calc(var(--spt-panel-radius) - 1px) calc(var(--spt-panel-radius) - 1px) 0 0;
+        z-index: 20;
+      }
+
+      .spt-auto-hide-toolbar .spt-toolbar-trigger {
+        display: block;
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+      }
+
+      .spt-auto-hide-toolbar .spt-toolbar-trigger:focus-visible {
+        outline: 2px solid #6366f1;
+        outline-offset: -2px;
+      }
+
+      .spt-auto-hide-toolbar .spt-header {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 10px 16px;
+        border: 0;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+        border-radius: inherit;
+        background: #f8fafc;
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+        transition: opacity 0.15s ease, visibility 0.15s;
+      }
+
+      .spt-auto-hide-toolbar .spt-actions {
+        flex-wrap: wrap;
+      }
+
+      .spt-auto-hide-toolbar .spt-toolbar:hover .spt-header,
+      .spt-auto-hide-toolbar .spt-toolbar:has(:focus-visible) .spt-header,
+      .spt-auto-hide-toolbar.spt-dragging .spt-header {
+        opacity: 1;
+        visibility: visible;
+        pointer-events: auto;
       }
 
       /* 顶部标题栏：透明化，图标微调 */
@@ -3847,10 +3939,10 @@
       /* 移动端适配 */
       @media (max-width: 720px) {
         .spt-overlay {
+          --spt-panel-radius: 16px;
           width: calc(100vw - 32px);
           right: 16px;
           bottom: 16px;
-          border-radius: 16px;
         }
       }
     `;
@@ -3878,7 +3970,9 @@
 
     header.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
+      if (e.target.closest("button")) return;
       isDragging = true;
+      container.classList.add("spt-dragging");
       const rect = container.getBoundingClientRect();
       startX = e.clientX;
       startY = e.clientY;
@@ -3906,6 +4000,7 @@
     function onUp() {
       if (!isDragging) return;
       isDragging = false;
+      container.classList.remove("spt-dragging");
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
       savePosition(container);
