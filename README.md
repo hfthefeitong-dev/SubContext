@@ -1,93 +1,73 @@
 # SubContext
 
-实时字幕上下文翻译浏览器扩展。支持从 Spotify、YouTube、ZDF 等网页捕获字幕，结合前后文批量翻译为自然的简体中文，并在页面中显示双语悬浮字幕。
+**English** · [中文](README.zh-CN.md)
 
-## 功能
+A browser extension (Chrome / Edge, Manifest V3) that translates the subtitles of ZDF, YouTube and Spotify into Simplified Chinese with an LLM (OpenAI, Gemini or DeepSeek). Each subtitle line appears together with its translation in a floating panel on the page.
 
-- 实时捕获 Spotify、YouTube、ZDF 字幕内容
-- 结合上下文进行批量翻译，减少逐句翻译造成的断裂感
-- 相邻分段自动润色，让字幕衔接更自然
-- 支持 OpenAI 兼容接口、Gemini API、DeepSeek API
-- 支持 Gemini / DeepSeek 思考模式配置
-- 支持自定义 API Base URL，方便使用反代或中转服务
-- 可开启原文校正提示，用于标记疑似拼写或听写错误
-- 可隐藏译文时间戳、限制显示最近 N 行字幕
-- 支持深色、浅色和自动主题
+## Why
 
-## 支持的模型服务
+I use SubContext to learn German with programmes from the ZDF Mediathek, YouTube videos and Spotify episodes. Translating subtitles line by line reads badly: one sentence is often spread over two or three subtitle lines, and names and pronouns lose what they refer to. Sending the whole transcript at once fixes that, but you pay for the entire video up front, and I often watch only about 15 minutes of an hour-long one. SubContext sits in between.
 
-扩展当前支持以下服务商或接口格式：
+## How it works
 
-- OpenAI 兼容接口
-- Gemini
-- DeepSeek
+1. **Capture.** A content script reads the timed subtitle lines from the page (see [Supported sites](#supported-sites)).
+2. **Batches.** The lines are cut into batches of 8 (configurable). The batch at the playback position is translated first and the next one is prefetched, so translations are ready before the lines come up. Requests run one at a time, so every batch can build on the one before it.
+3. **Context.** Each request also carries the last three lines of the previous batch, both the original and the translation. This keeps names, terms and tone consistent and lets the model continue a sentence that began in the previous batch.
+4. **Smoothing the joins.** Once two neighbouring batches are translated, a second, small request sends the last 3 lines of the first batch and the first 3 lines of the second (original and translation, with the boundary marked). The prompt lets the model rewrite only the sentence that crosses the boundary and asks for every other line unchanged.
 
-在设置页中可以分别填写 OpenAI、Gemini、DeepSeek 的 API Key。选择 Gemini 或 DeepSeek 模型时，扩展会使用对应服务商的 Key，不会回退到 OpenAI Key。
+The model gets enough context to keep sentences whole, but only the part you actually watch (plus one batch ahead) is translated. Translations are cached for the current video, so seeking back does not translate again.
 
-## 安装方式
+Optionally, the same request also asks for high-confidence fixes of spelling or speech-recognition errors in the original line; corrected words are highlighted in the panel.
 
-1. 下载或克隆本仓库。
-2. 打开 Chrome 或 Edge 的扩展管理页面。
-3. 开启“开发者模式”。
-4. 选择“加载已解压的扩展程序”。
-5. 选择本项目文件夹。
+## Supported sites
 
-安装后，在支持的网站打开视频或歌词字幕，扩展会自动尝试捕获字幕并显示翻译悬浮窗。
+| Site | Where the subtitles come from |
+| --- | --- |
+| ZDF (`zdf.de`) | The programme's subtitle file, found through the player data |
+| YouTube (`www.youtube.com`, `m.youtube.com`) | The transcript panel: open **Show transcript** below the video first |
+| Spotify (`open.spotify.com`) | The subtitle track of the episode playing in the web player |
 
-## 使用方式
+Videos without subtitles or a transcript, such as many live streams, cannot be translated.
 
-1. 打开扩展设置页。
-2. 填写至少一个模型服务商的 API Key。
-3. 在“模型参数”中选择要使用的模型。
-4. 根据需要调整预取行数、连贯缓冲行数、温度和思考深度。
-5. 回到播放页，打开字幕或转写面板，等待扩展自动翻译。
+## Install
 
-### YouTube 注意事项
+There is no build step.
 
-YouTube 页面通常需要先打开“转写”面板，扩展才能读取完整字幕内容。如果是直播或回放页面，可能会因为页面未提供可抓取转写数据而无法翻译。
+1. Clone or download this repository.
+2. Open `chrome://extensions` (or `edge://extensions`) and switch on **Developer mode**.
+3. Click **Load unpacked** and select the repository folder. The extension appears as 字幕上下文翻译先锋版.
 
-### DeepSeek 思考模式
+## Configure
 
-选择 DeepSeek 模型时，设置页中的思考深度会自动切换为 DeepSeek 模式：
+Open the settings by right-clicking the extension's toolbar icon and choosing **Options**, or with the ⚙ button in the subtitle panel. The settings page is in Chinese, with English names in brackets for the main options.
 
-- `disabled`：关闭思考模式
-- `high`：标准思考强度
-- `max`：最高思考强度
+1. Enter an API key for at least one provider: OpenAI, Google Gemini or DeepSeek.
+2. Pick a model: `gpt-6-luna`, `gpt-5.6-luna`, `gpt-5.2`, `gpt-5.1` (default), `gemini-3-flash-preview`, `deepseek-v4-flash` or `deepseek-v4-pro`. The model decides which key and endpoint are used: Gemini models call the Gemini API, DeepSeek models the DeepSeek API, the others the OpenAI Chat Completions endpoint. There is no fallback to another provider's key.
+3. Optional: set **API Base URL** to send OpenAI or DeepSeek requests through a compatible proxy or gateway.
+4. Optional: change the batch size (**Context Size**, default 8), the lines on each side of a join (**Smooth Lines**, default 3), **Temperature** and **Thinking Level**, and display options such as hiding timestamps or showing only the last N lines.
 
-DeepSeek 思考模式开启时，扩展会自动使用 DeepSeek 的 OpenAI 兼容参数。
+Keys and settings stay in the browser's local extension storage (`chrome.storage.local`). Subtitle text is sent only to the model endpoint you configure.
 
-## 项目结构
+## Use
 
-```text
-.
-├── manifest.json       # 浏览器扩展清单
-├── background.js       # 后台服务、模型请求和翻译逻辑
-├── contentScript.js    # 字幕捕获、页面悬浮窗和交互逻辑
-├── options.html        # 设置页界面
-├── options.js          # 设置页逻辑
-├── popup.html          # 扩展弹窗
-├── popup.js            # 弹窗逻辑
-├── zdfBridge.js        # ZDF 页面桥接脚本
-├── zdfPageHook.js      # ZDF 页面注入脚本
-└── logo.png            # 扩展图标
-```
+Open a video on one of the supported sites and click the extension's icon in the browser toolbar. The panel opens and translation starts; closing the panel with × stops it. Click a line in the panel to copy its original text.
 
-## 隐私说明
+## Project layout
 
-API Key 和设置项保存在浏览器本地存储中。扩展会将需要翻译的字幕文本发送到你在设置中选择的模型服务商，用于生成翻译结果。
+| File | Role |
+| --- | --- |
+| `manifest.json` | Manifest V3 configuration and content scripts for the three sites |
+| `contentScript.js` | Subtitle capture per site, batching and prefetch, join smoothing, floating panel |
+| `background.js` | Service worker: prompts, context messages, API calls with timeout and retry |
+| `options.html`, `options.js` | Settings page |
+| `zdfPageHook.js`, `zdfBridge.js` | Spot the subtitle files the ZDF player loads and hand them to the content script |
 
-## 开发
+## Limitations
 
-本项目是原生浏览器扩展，不需要构建步骤。修改源码后，在扩展管理页点击“重新加载”即可生效。
-
-可用以下命令检查主要脚本语法：
-
-```powershell
-node --check background.js
-node --check contentScript.js
-node --check options.js
-```
+- Not in the Chrome Web Store; load it unpacked as above.
+- The target language is fixed to Simplified Chinese, and the interface is in Chinese.
+- Capture depends on each site's page structure, so a redesign of YouTube, ZDF or Spotify can break it.
 
 ## License
 
-本项目基于 [MIT License](LICENSE) 开源。
+[MIT](LICENSE)
